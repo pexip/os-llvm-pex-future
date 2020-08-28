@@ -1,0 +1,45 @@
+#!/usr/bin/make -f
+#export DH_VERBOSE=1
+
+# Don't conflict with the system compiler
+confflags += -DCMAKE_INSTALL_PREFIX=/opt/llvm-future
+# Reduce size of the toolchain binaries, sigh
+ confflags += -DLLVM_BUILD_LLVM_DYLIB=on -DLLVM_LINK_LLVM_DYLIB=on
+# We're not trying to debug the toolchain
+confflags += -DCMAKE_BUILD_TYPE=Release -DLLVM_INSTALL_TOOLCHAIN_ONLY=on
+# And we really care about clang only?
+confflags += -DLLVM_ENABLE_PROJECTS="clang;libc"
+
+DEBDIR=$(PWD)/debian/llvm-pex-future
+
+#confflags += --prefix=/opt/gcc-future
+#confflags += --program-prefix=pexip-future-
+
+# Reset all of these to be clean here
+CFLAGS=
+CXXFLAGS=
+CPPFLAGS=
+LC_ALL=C.UTF-8
+
+ifneq (,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
+       NUMJOBS = $(patsubst parallel=%,%,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
+       PARALLEL += -j$(NUMJOBS)
+endif
+
+%:
+	dh $@ --parallel
+
+override_dh_auto_configure:
+	mkdir -p debian/build-deb
+	cd debian/build-deb && cmake -G Ninja $(confflags) ../../llvm
+
+override_dh_auto_build:
+	cd debian/build-deb && ninja $(PARALLEL)
+
+override_dh_auto_install:
+	cd debian/build-deb && cmake -DCMAKE_INSTALL_PREFIX=$(DEBDIR)/opt/llvm-future -P cmake_install.cmake
+	rename -v -d 's,^,pex-future-,g' $(DEBDIR)/opt/llvm-future/bin/*
+	for LINK in $(find $(DEBDIR)/opt/llvm-future/bin -type l); \
+		do TARGET=$(readlink $LINK); \
+		ln -sfv pex-future-$${TARGET} $LINK; \
+	done

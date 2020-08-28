@@ -1,0 +1,6 @@
+llvm-pex-future (10.0.1-0pexip1) pexip; urgency=medium
+
+  * Initial release
+  * Simple binary build of llvm-10 for us to use in CI
+
+ -- Steve McIntyre <steve.mcintyre@pexip.com>  Tue, 08 Sep 2020 18:56:22 +0100
