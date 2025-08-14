@@ -3,9 +3,9 @@ Section: devel
 Priority: optional
 Maintainer: Pexip AS <packaging@pexip.com>
 Standards-Version: 4.3.0
-Build-Depends: debhelper (>= 9),
- libc6-dev-i386,
- libc6-dev-x32,
+Build-Depends: debhelper-compat (= 13),
+ libc6-dev-i386 [amd64],
+ libc6-dev-x32 [amd64],
  libc6-dbg,
  binutils,
  m4,
@@ -38,11 +38,9 @@ Vcs-Git: https://github.com/pexip/os-llvm-pex-future.git
 Package: llvm-pex-future
 Architecture: amd64
 Depends: ${misc:Depends},
- gcc-multilib,
  lib32stdc++6,
  libc6,
  libgcc1,
- lib32gcc1,
 Description: Simple packaged version of a future llvm
  Simple packaged version of a future llvm version to live in
  /opt/llvm-future, ready for us to use with CI in older releases.

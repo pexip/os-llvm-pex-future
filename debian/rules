@@ -31,15 +31,10 @@ endif
 
 override_dh_auto_configure:
 	mkdir -p debian/build-deb
-	cd debian/build-deb && cmake -G Ninja $(confflags) ../../llvm
+	cd debian/build-deb && cmake -G Ninja $(confflags) ../../llvm -DLLVM_ENABLE_PROJECTS="clang;lld"
 
 override_dh_auto_build:
 	cd debian/build-deb && ninja $(PARALLEL)
 
 override_dh_auto_install:
 	cd debian/build-deb && cmake -DCMAKE_INSTALL_PREFIX=$(DEBDIR)/opt/llvm-future -P cmake_install.cmake
-	rename -v -d 's,^,pex-future-,g' $(DEBDIR)/opt/llvm-future/bin/*
-	for LINK in $(find $(DEBDIR)/opt/llvm-future/bin -type l); \
-		do TARGET=$(readlink $LINK); \
-		ln -sfv pex-future-$${TARGET} $LINK; \
-	done
