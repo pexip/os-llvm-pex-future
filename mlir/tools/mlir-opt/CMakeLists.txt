@@ -2,67 +2,109 @@ set(LLVM_OPTIONAL_SOURCES
   null.cpp
 )
 
-set(LIB_LIBS
-  MLIRAnalysis
-  MLIRLLVMIR
-  MLIRParser
-  MLIRPass
-  MLIRTransforms
-  MLIRSupport
-)
-add_llvm_library(MLIRMlirOptLib
-  mlir-opt.cpp
-)
-target_link_libraries(MLIRMlirOptLib ${LIB_LIBS})
+get_property(dialect_libs GLOBAL PROPERTY MLIR_DIALECT_LIBS)
+get_property(conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
+get_property(extension_libs GLOBAL PROPERTY MLIR_EXTENSION_LIBS)
+set(LLVM_LINK_COMPONENTS
+  Core
+  Support
+  AsmParser
+  )
+
+if(MLIR_INCLUDE_TESTS)
+  set(test_libs
+    ${cuda_test_libs}
+    MLIRTestFuncToLLVM
+    MLIRAffineTransformsTestPasses
+    MLIRArithTestPasses
+    MLIRArmNeonTestPasses
+    MLIRArmSMETestPasses
+    MLIRBufferizationTestPasses
+    MLIRControlFlowTestPasses
+    MLIRDLTITestPasses
+    MLIRFuncTestPasses
+    MLIRGPUTestPasses
+    MLIRLinalgTestPasses
+    MLIRLoopLikeInterfaceTestPasses
+    MLIRMathTestPasses
+    MLIRTestMathToVCIX
+    MLIRMemRefTestPasses
+    MLIRMeshTest
+    MLIRNVGPUTestPasses
+    MLIRSCFTestPasses
+    MLIRShapeTestPasses
+    MLIRSPIRVTestPasses
+    MLIRTensorTestPasses
+    MLIRTestAnalysis
+    MLIRTestConvertToSPIRV
+    MLIRTestDialect
+    MLIRTestDynDialect
+    MLIRTestIR
+    MLIRTestOneToNTypeConversionPass
+    MLIRTestPass
+    MLIRTestReducer
+    MLIRTestTransforms
+    MLIRTilingInterfaceTestPasses
+    MLIRVectorTestPasses
+    MLIRTestVectorToSPIRV
+    MLIRLLVMTestPasses
+    )
+  set(test_libs ${test_libs}
+    MLIRTestPDLL
+    MLIRTestTransformDialect
+    )
+
+  if (MLIR_ENABLE_PDL_IN_PATTERNMATCH)
+    set(test_libs ${test_libs}
+      MLIRTestPDLL
+      MLIRTestRewrite
+      )
+  endif()
+endif()
 
 set(LIBS
-  MLIRAnalysis
-  MLIRAffineOps
-  MLIRAffineToStandard
-  MLIRLoopsToGPU
-  MLIRLinalgToLLVM
+  ${dialect_libs}
+  ${conversion_libs}
+  ${extension_libs}
+  ${test_libs}
 
-  MLIRLoopToStandard
-  MLIREDSC
-  MLIRFxpMathOps
-  MLIRGPU
-  MLIRGPUtoNVVMTransforms
-  MLIRGPUtoROCDLTransforms
-  MLIRGPUtoSPIRVTransforms
-  MLIRLinalg
-  MLIRLLVMIR
-  MLIRLoopOps
-  MLIRNVVMIR
-  MLIROptMain
+  MLIRAffineAnalysis
+  MLIRAnalysis
+  MLIRCastInterfaces
+  MLIRDialect
+  MLIROptLib
   MLIRParser
   MLIRPass
-  MLIRQuantizerTransforms
-  MLIRQuantOps
-  MLIRROCDLIR
-  MLIRSPIRV
-  MLIRStandardToSPIRVTransforms
-  MLIRSPIRVTestPasses
-  MLIRSPIRVTransforms
-  MLIRStandardOps
-  MLIRStandardToLLVM
   MLIRTransforms
-  MLIRTestDialect
-  MLIRTestIR
-  MLIRTestPass
-  MLIRTestTransforms
+  MLIRTransformUtils
   MLIRSupport
-  MLIRVectorOps
-  MLIRVectorToLLVM
-  MLIRVectorToLoops
-)
-if(MLIR_CUDA_CONVERSIONS_ENABLED)
-  list(APPEND LIBS
-    MLIRGPUtoCUDATransforms
+  MLIRIR
+
+  # TODO: Remove when registerAllGPUToLLVMIRTranslations is no longer
+  # registered directly in mlir-opt.cpp.
+  MLIRToLLVMIRTranslationRegistration
   )
-endif()
-add_llvm_tool(mlir-opt
- mlir-opt.cpp
-)
+
+# Exclude from libMLIR.so because this has static options intended for
+# opt-like tools only.
+add_mlir_library(MLIRMlirOptMain
+  mlir-opt.cpp
+
+  EXCLUDE_FROM_LIBMLIR
+
+  LINK_LIBS PUBLIC
+  ${LIBS}
+  )
+
+add_mlir_tool(mlir-opt
+  mlir-opt.cpp
+
+  DEPENDS
+  ${LIBS}
+  SUPPORT_PLUGINS
+  )
+target_link_libraries(mlir-opt PRIVATE ${LIBS})
 llvm_update_compile_flags(mlir-opt)
-whole_archive_link(mlir-opt ${LIBS})
-target_link_libraries(mlir-opt PRIVATE MLIRIR MLIRMlirOptLib ${LIBS} LLVMSupport)
+
+mlir_check_all_link_libraries(mlir-opt)
+export_executable_symbols_for_plugins(mlir-opt)

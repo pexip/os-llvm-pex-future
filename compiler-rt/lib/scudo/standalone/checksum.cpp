@@ -8,6 +8,7 @@
 
 #include "checksum.h"
 #include "atomic_helpers.h"
+#include "chunk.h"
 
 #if defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
@@ -18,6 +19,8 @@
 #else
 #include <sys/auxv.h>
 #endif
+#elif defined(__loongarch__)
+#include <sys/auxv.h>
 #endif
 
 namespace scudo {
@@ -31,6 +34,13 @@ Checksum HashAlgorithm = {Checksum::BSD};
 #define bit_SSE4_2 bit_SSE42 // clang and gcc have different defines.
 #endif
 
+#ifndef signature_HYGON_ebx // They are not defined in gcc.
+// HYGON: "HygonGenuine".
+#define signature_HYGON_ebx 0x6f677948
+#define signature_HYGON_edx 0x6e65476e
+#define signature_HYGON_ecx 0x656e6975
+#endif
+
 bool hasHardwareCRC32() {
   u32 Eax, Ebx = 0, Ecx = 0, Edx = 0;
   __get_cpuid(0, &Eax, &Ebx, &Ecx, &Edx);
@@ -39,7 +49,10 @@ bool hasHardwareCRC32() {
                        (Ecx == signature_INTEL_ecx);
   const bool IsAMD = (Ebx == signature_AMD_ebx) && (Edx == signature_AMD_edx) &&
                      (Ecx == signature_AMD_ecx);
-  if (!IsIntel && !IsAMD)
+  const bool IsHygon = (Ebx == signature_HYGON_ebx) &&
+                       (Edx == signature_HYGON_edx) &&
+                       (Ecx == signature_HYGON_ecx);
+  if (!IsIntel && !IsAMD && !IsHygon)
     return false;
   __get_cpuid(1, &Eax, &Ebx, &Ecx, &Edx);
   return !!(Ecx & bit_SSE4_2);
@@ -63,6 +76,20 @@ bool hasHardwareCRC32() {
 #else
   return !!(getauxval(AT_HWCAP) & HWCAP_CRC32);
 #endif // SCUDO_FUCHSIA
+}
+#elif defined(__loongarch__)
+// The definition is only pulled in by <sys/auxv.h> since glibc 2.38, so
+// supply it if missing.
+#ifndef HWCAP_LOONGARCH_CRC32
+#define HWCAP_LOONGARCH_CRC32 (1 << 6)
+#endif
+// Query HWCAP for platform capability, according to *Software Development and
+// Build Convention for LoongArch Architectures* v0.1, Section 9.1.
+//
+// Link:
+// https://github.com/loongson/la-softdev-convention/blob/v0.1/la-softdev-convention.adoc#kernel-development
+bool hasHardwareCRC32() {
+  return !!(getauxval(AT_HWCAP) & HWCAP_LOONGARCH_CRC32);
 }
 #else
 // No hardware CRC32 implemented in Scudo for other architectures.

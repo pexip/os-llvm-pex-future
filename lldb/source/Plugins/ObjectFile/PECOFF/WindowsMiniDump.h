@@ -6,15 +6,15 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef liblldb_WindowsMiniDump_h_
-#define liblldb_WindowsMiniDump_h_
+#ifndef LLDB_SOURCE_PLUGINS_OBJECTFILE_PECOFF_WINDOWSMINIDUMP_H
+#define LLDB_SOURCE_PLUGINS_OBJECTFILE_PECOFF_WINDOWSMINIDUMP_H
 
 #include "lldb/Target/Process.h"
 
 namespace lldb_private {
 
 bool SaveMiniDump(const lldb::ProcessSP &process_sp,
-                  const lldb_private::FileSpec &outfile,
+                  const SaveCoreOptions &core_options,
                   lldb_private::Status &error);
 
 } // namespace lldb_private

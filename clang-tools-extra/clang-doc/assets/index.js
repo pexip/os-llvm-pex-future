@@ -31,8 +31,12 @@ function computeRelativePath(FilePath, CurrentDirectory) {
 
 function genLink(Ref, CurrentDirectory) {
   var Path = computeRelativePath(Ref.Path, CurrentDirectory);
-  Path = append(Path, Ref.Name + ".html")
-  ANode = document.createElement("a");
+  if (Ref.RefType == "namespace")
+    Path = append(Path, "index.html");
+  else
+    Path = append(Path, Ref.Name + ".html")
+
+    ANode = document.createElement("a");
   ANode.setAttribute("href", Path);
   var TextNode = document.createTextNode(Ref.Name);
   ANode.appendChild(TextNode);
@@ -76,8 +80,8 @@ function createIndex(Index) {
 
 // Runs after DOM loads
 document.addEventListener("DOMContentLoaded", function() {
-  // JsonIndex is a variable from another file that contains the index
-  // in JSON format
-  var Index = JSON.parse(JsonIndex);
-  createIndex(Index);
+  // LoadIndex is an asynchronous function that will be generated clang-doc.
+  // It ensures that the function call will not block as soon the page loads,
+  // since the index object are often huge and can contain thousands of lines.
+  LoadIndex().then((Index) => { createIndex(Index); });
 });

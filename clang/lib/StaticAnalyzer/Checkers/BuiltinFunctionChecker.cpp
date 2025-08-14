@@ -6,16 +6,22 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This checker evaluates clang builtin functions.
+// This checker evaluates "standalone" clang builtin functions that are not
+// just special-cased variants of well-known non-builtin functions.
+// Builtin functions like __builtin_memcpy and __builtin_alloca should be
+// evaluated by the same checker that handles their non-builtin variant to
+// ensure that the two variants are handled consistently.
 //
 //===----------------------------------------------------------------------===//
 
-#include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
 #include "clang/Basic/Builtins.h"
+#include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/CallDescription.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/DynamicExtent.h"
 
 using namespace clang;
 using namespace ento;
@@ -25,8 +31,40 @@ namespace {
 class BuiltinFunctionChecker : public Checker<eval::Call> {
 public:
   bool evalCall(const CallEvent &Call, CheckerContext &C) const;
+
+private:
+  // From: clang/include/clang/Basic/Builtins.def
+  // C++ standard library builtins in namespace 'std'.
+  const CallDescriptionSet BuiltinLikeStdFunctions{
+      {CDM::SimpleFunc, {"std", "addressof"}},        //
+      {CDM::SimpleFunc, {"std", "__addressof"}},      //
+      {CDM::SimpleFunc, {"std", "as_const"}},         //
+      {CDM::SimpleFunc, {"std", "forward"}},          //
+      {CDM::SimpleFunc, {"std", "forward_like"}},     //
+      {CDM::SimpleFunc, {"std", "move"}},             //
+      {CDM::SimpleFunc, {"std", "move_if_noexcept"}}, //
+  };
+
+  bool isBuiltinLikeFunction(const CallEvent &Call) const;
 };
 
+} // namespace
+
+bool BuiltinFunctionChecker::isBuiltinLikeFunction(
+    const CallEvent &Call) const {
+  const auto *FD = llvm::dyn_cast_or_null<FunctionDecl>(Call.getDecl());
+  if (!FD || FD->getNumParams() != 1)
+    return false;
+
+  if (QualType RetTy = FD->getReturnType();
+      !RetTy->isPointerType() && !RetTy->isReferenceType())
+    return false;
+
+  if (QualType ParmTy = FD->getParamDecl(0)->getType();
+      !ParmTy->isPointerType() && !ParmTy->isReferenceType())
+    return false;
+
+  return BuiltinLikeStdFunctions.contains(Call);
 }
 
 bool BuiltinFunctionChecker::evalCall(const CallEvent &Call,
@@ -39,11 +77,17 @@ bool BuiltinFunctionChecker::evalCall(const CallEvent &Call,
   const LocationContext *LCtx = C.getLocationContext();
   const Expr *CE = Call.getOriginExpr();
 
+  if (isBuiltinLikeFunction(Call)) {
+    C.addTransition(state->BindExpr(CE, LCtx, Call.getArgSVal(0)));
+    return true;
+  }
+
   switch (FD->getBuiltinID()) {
   default:
     return false;
 
-  case Builtin::BI__builtin_assume: {
+  case Builtin::BI__builtin_assume:
+  case Builtin::BI__assume: {
     assert (Call.getNumArgs() > 0);
     SVal Arg = Call.getArgSVal(0);
     if (Arg.isUndef())
@@ -63,40 +107,18 @@ bool BuiltinFunctionChecker::evalCall(const CallEvent &Call,
 
   case Builtin::BI__builtin_unpredictable:
   case Builtin::BI__builtin_expect:
+  case Builtin::BI__builtin_expect_with_probability:
   case Builtin::BI__builtin_assume_aligned:
-  case Builtin::BI__builtin_addressof: {
-    // For __builtin_unpredictable, __builtin_expect, and
-    // __builtin_assume_aligned, just return the value of the subexpression.
+  case Builtin::BI__builtin_addressof:
+  case Builtin::BI__builtin_function_start: {
+    // For __builtin_unpredictable, __builtin_expect,
+    // __builtin_expect_with_probability and __builtin_assume_aligned,
+    // just return the value of the subexpression.
     // __builtin_addressof is going from a reference to a pointer, but those
     // are represented the same way in the analyzer.
     assert (Call.getNumArgs() > 0);
     SVal Arg = Call.getArgSVal(0);
     C.addTransition(state->BindExpr(CE, LCtx, Arg));
-    return true;
-  }
-
-  case Builtin::BI__builtin_alloca_with_align:
-  case Builtin::BI__builtin_alloca: {
-    // FIXME: Refactor into StoreManager itself?
-    MemRegionManager& RM = C.getStoreManager().getRegionManager();
-    const AllocaRegion* R =
-      RM.getAllocaRegion(CE, C.blockCount(), C.getLocationContext());
-
-    // Set the extent of the region in bytes. This enables us to use the
-    // SVal of the argument directly. If we save the extent in bits, we
-    // cannot represent values like symbol*8.
-    auto Size = Call.getArgSVal(0);
-    if (Size.isUndef())
-      return true; // Return true to model purity.
-
-    SValBuilder& svalBuilder = C.getSValBuilder();
-    DefinedOrUnknownSVal Extent = R->getExtent(svalBuilder);
-    DefinedOrUnknownSVal extentMatchesSizeArg =
-      svalBuilder.evalEQ(state, Extent, Size.castAs<DefinedOrUnknownSVal>());
-    state = state->assume(extentMatchesSizeArg, true);
-    assert(state && "The region should not have any previous constraints");
-
-    C.addTransition(state->BindExpr(CE, LCtx, loc::MemRegionVal(R)));
     return true;
   }
 
@@ -134,6 +156,6 @@ void ento::registerBuiltinFunctionChecker(CheckerManager &mgr) {
   mgr.registerChecker<BuiltinFunctionChecker>();
 }
 
-bool ento::shouldRegisterBuiltinFunctionChecker(const LangOptions &LO) {
+bool ento::shouldRegisterBuiltinFunctionChecker(const CheckerManager &mgr) {
   return true;
 }

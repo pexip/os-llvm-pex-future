@@ -1,5 +1,5 @@
-// RUN: %clang_cc1             -triple aarch64-eabi -target-feature +tme -S -emit-llvm %s -o - | FileCheck %s
-// RUN: %clang_cc1 -DUSE_ACLE  -triple aarch64-eabi -target-feature +tme -S -emit-llvm %s -o - | FileCheck %s
+// RUN: %clang_cc1             -triple aarch64 -target-feature +tme -emit-llvm %s -o - | FileCheck %s
+// RUN: %clang_cc1 -DUSE_ACLE  -triple aarch64 -target-feature +tme -emit-llvm %s -o - | FileCheck %s
 
 #define A -1
 constexpr int f() { return 65536; }
@@ -36,7 +36,7 @@ void test_tme_funcs() {
 #ifdef __ARM_FEATURE_TME
 extern "C" void arm_feature_tme_defined() {}
 #endif
-// CHECK: define void @arm_feature_tme_defined()
+// CHECK: define{{.*}} void @arm_feature_tme_defined()
 
-// CHECK: attributes #1 = { nounwind }
+// CHECK: attributes #1 = { nounwind willreturn }
 

@@ -1,4 +1,4 @@
-//===--------------- Implementation of PublicAPICommand ----------*-C++ -*-===//
+//===-- Implementation of PublicAPICommand --------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -8,31 +8,17 @@
 
 #include "PublicAPICommand.h"
 
+#include "utils/LibcTableGenUtil/APIIndexer.h"
+
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/SourceMgr.h"
-#include "llvm/TableGen/Error.h"
 #include "llvm/TableGen/Record.h"
-
-static const char NamedTypeClassName[] = "NamedType";
-static const char PtrTypeClassName[] = "PtrType";
-static const char RestrictedPtrTypeClassName[] = "RestrictedPtrType";
-static const char ConstTypeClassName[] = "ConstType";
-static const char StructTypeClassName[] = "Struct";
-
-static const char StandardSpecClassName[] = "StandardSpec";
-static const char PublicAPIClassName[] = "PublicAPI";
-
-static bool isa(llvm::Record *Def, llvm::Record *TypeClass) {
-  llvm::RecordRecTy *RecordType = Def->getType();
-  llvm::ArrayRef<llvm::Record *> Classes = RecordType->getClasses();
-  // We want exact types. That is, we don't want the classes listed in
-  // spec.td to be subclassed. Hence, we do not want the record |Def|
-  // to be of more than one class type..
-  if (Classes.size() != 1)
-    return false;
-  return Classes[0] == TypeClass;
-}
+#include <algorithm>
+#include <vector>
 
 // Text blocks for macro definitions and type decls can be indented to
 // suit the surrounding tablegen listing. We need to dedent such blocks
@@ -57,184 +43,276 @@ static void dedentAndWrite(llvm::StringRef Text, llvm::raw_ostream &OS) {
   }
 }
 
-class APIGenerator {
-  llvm::StringRef StdHeader;
-
-  // TableGen classes in spec.td.
-  llvm::Record *NamedTypeClass;
-  llvm::Record *PtrTypeClass;
-  llvm::Record *RestrictedPtrTypeClass;
-  llvm::Record *ConstTypeClass;
-  llvm::Record *StructClass;
-  llvm::Record *StandardSpecClass;
-  llvm::Record *PublicAPIClass;
-
-  using NameToRecordMapping = std::unordered_map<std::string, llvm::Record *>;
-  using NameSet = std::unordered_set<std::string>;
-
-  // Mapping from names to records defining them.
-  NameToRecordMapping MacroSpecMap;
-  NameToRecordMapping TypeSpecMap;
-  NameToRecordMapping FunctionSpecMap;
-  NameToRecordMapping MacroDefsMap;
-  NameToRecordMapping TypeDeclsMap;
-
-  NameSet Structs;
-  NameSet Functions;
-
-  bool isaNamedType(llvm::Record *Def) { return isa(Def, NamedTypeClass); }
-
-  bool isaStructType(llvm::Record *Def) { return isa(Def, StructClass); }
-
-  bool isaPtrType(llvm::Record *Def) { return isa(Def, PtrTypeClass); }
-
-  bool isaConstType(llvm::Record *Def) { return isa(Def, ConstTypeClass); }
-
-  bool isaRestrictedPtrType(llvm::Record *Def) {
-    return isa(Def, RestrictedPtrTypeClass);
-  }
-
-  bool isaStandardSpec(llvm::Record *Def) {
-    return isa(Def, StandardSpecClass);
-  }
-
-  bool isaPublicAPI(llvm::Record *Def) { return isa(Def, PublicAPIClass); }
-
-  std::string getTypeAsString(llvm::Record *TypeRecord) {
-    if (isaNamedType(TypeRecord) || isaStructType(TypeRecord)) {
-      return TypeRecord->getValueAsString("Name");
-    } else if (isaPtrType(TypeRecord)) {
-      return getTypeAsString(TypeRecord->getValueAsDef("PointeeType")) + " *";
-    } else if (isaConstType(TypeRecord)) {
-      return std::string("const ") +
-             getTypeAsString(TypeRecord->getValueAsDef("UnqualifiedType"));
-    } else if (isaRestrictedPtrType(TypeRecord)) {
-      return getTypeAsString(TypeRecord->getValueAsDef("PointeeType")) +
-             " *__restrict";
-    } else {
-      llvm::PrintFatalError(TypeRecord->getLoc(), "Invalid type.\n");
-    }
-  }
-
-  void indexStandardSpecDef(llvm::Record *StandardSpec) {
-    auto HeaderSpecList = StandardSpec->getValueAsListOfDefs("Headers");
-    for (llvm::Record *HeaderSpec : HeaderSpecList) {
-      if (HeaderSpec->getValueAsString("Name") == StdHeader) {
-        auto MacroSpecList = HeaderSpec->getValueAsListOfDefs("Macros");
-        // TODO: Trigger a fatal error on duplicate specs.
-        for (llvm::Record *MacroSpec : MacroSpecList)
-          MacroSpecMap[MacroSpec->getValueAsString("Name")] = MacroSpec;
-
-        auto TypeSpecList = HeaderSpec->getValueAsListOfDefs("Types");
-        for (llvm::Record *TypeSpec : TypeSpecList)
-          TypeSpecMap[TypeSpec->getValueAsString("Name")] = TypeSpec;
-
-        auto FunctionSpecList = HeaderSpec->getValueAsListOfDefs("Functions");
-        for (llvm::Record *FunctionSpec : FunctionSpecList) {
-          FunctionSpecMap[FunctionSpec->getValueAsString("Name")] =
-              FunctionSpec;
-        }
-      }
-    }
-  }
-
-  void indexPublicAPIDef(llvm::Record *PublicAPI) {
-    // While indexing the public API, we do not check if any of the entities
-    // requested is from an included standard. Such a check is done while
-    // generating the API.
-    auto MacroDefList = PublicAPI->getValueAsListOfDefs("Macros");
-    for (llvm::Record *MacroDef : MacroDefList)
-      MacroDefsMap[MacroDef->getValueAsString("Name")] = MacroDef;
-
-    auto TypeDeclList = PublicAPI->getValueAsListOfDefs("TypeDeclarations");
-    for (llvm::Record *TypeDecl : TypeDeclList)
-      TypeDeclsMap[TypeDecl->getValueAsString("Name")] = TypeDecl;
-
-    auto StructList = PublicAPI->getValueAsListOfStrings("Structs");
-    for (llvm::StringRef StructName : StructList)
-      Structs.insert(StructName);
-
-    auto FunctionList = PublicAPI->getValueAsListOfStrings("Functions");
-    for (llvm::StringRef FunctionName : FunctionList)
-      Functions.insert(FunctionName);
-  }
-
-  void index(llvm::RecordKeeper &Records) {
-    NamedTypeClass = Records.getClass(NamedTypeClassName);
-    PtrTypeClass = Records.getClass(PtrTypeClassName);
-    RestrictedPtrTypeClass = Records.getClass(RestrictedPtrTypeClassName);
-    StructClass = Records.getClass(StructTypeClassName);
-    ConstTypeClass = Records.getClass(ConstTypeClassName);
-    StandardSpecClass = Records.getClass(StandardSpecClassName);
-    PublicAPIClass = Records.getClass(PublicAPIClassName);
-
-    const auto &DefsMap = Records.getDefs();
-    for (auto &Pair : DefsMap) {
-      llvm::Record *Def = Pair.second.get();
-      if (isaStandardSpec(Def))
-        indexStandardSpecDef(Def);
-      if (isaPublicAPI(Def)) {
-        if (Def->getValueAsString("HeaderName") == StdHeader)
-          indexPublicAPIDef(Def);
-      }
-    }
-  }
-
-public:
-  APIGenerator(llvm::StringRef Header, llvm::RecordKeeper &Records)
-      : StdHeader(Header) {
-    index(Records);
-  }
-
-  void write(llvm::raw_ostream &OS) {
-    for (auto &Pair : MacroDefsMap) {
-      const std::string &Name = Pair.first;
-      if (MacroSpecMap.find(Name) == MacroSpecMap.end())
-        llvm::PrintFatalError(Name + " not found in any standard spec.\n");
-
-      llvm::Record *MacroDef = Pair.second;
-      dedentAndWrite(MacroDef->getValueAsString("Defn"), OS);
-
-      OS << '\n';
-    }
-
-    for (auto &Pair : TypeDeclsMap) {
-      const std::string &Name = Pair.first;
-      if (TypeSpecMap.find(Name) == TypeSpecMap.end())
-        llvm::PrintFatalError(Name + " not found in any standard spec.\n");
-
-      llvm::Record *TypeDecl = Pair.second;
-      dedentAndWrite(TypeDecl->getValueAsString("Decl"), OS);
-
-      OS << '\n';
-    }
-
-    OS << "__BEGIN_C_DECLS\n\n";
-    for (auto &Name : Functions) {
-      if (FunctionSpecMap.find(Name) == FunctionSpecMap.end())
-        llvm::PrintFatalError(Name + " not found in any standard spec.\n");
-
-      llvm::Record *FunctionSpec = FunctionSpecMap[Name];
-      llvm::Record *RetValSpec = FunctionSpec->getValueAsDef("Return");
-      llvm::Record *ReturnType = RetValSpec->getValueAsDef("ReturnType");
-
-      OS << getTypeAsString(ReturnType) << " " << Name << "(";
-
-      auto ArgsList = FunctionSpec->getValueAsListOfDefs("Args");
-      for (size_t i = 0; i < ArgsList.size(); ++i) {
-        llvm::Record *ArgType = ArgsList[i]->getValueAsDef("ArgType");
-        OS << getTypeAsString(ArgType);
-        if (i < ArgsList.size() - 1)
-          OS << ", ";
-      }
-
-      OS << ");\n\n";
-    }
-    OS << "__END_C_DECLS\n";
-  }
-};
+static std::string getTypeHdrName(const std::string &Name) {
+  llvm::SmallVector<llvm::StringRef> Parts;
+  llvm::SplitString(llvm::StringRef(Name), Parts);
+  return llvm::join(Parts.begin(), Parts.end(), "_");
+}
 
 namespace llvm_libc {
+
+static bool isAsciiStart(char C) {
+  return (C >= 'A' && C <= 'Z') || (C >= 'a' && C <= 'z') || C == '_';
+}
+
+static bool isAsciiContinue(char C) {
+  return isAsciiStart(C) || (C >= '0' && C <= '9');
+}
+
+static bool isAsciiIdentifier(llvm::StringRef S) {
+  if (S.empty())
+    return false;
+  if (!isAsciiStart(S[0]))
+    return false;
+  for (char C : S.drop_front())
+    if (!isAsciiContinue(C))
+      return false;
+  return true;
+}
+
+static AttributeStyle getAttributeStyle(llvm::Record *Instance) {
+  llvm::StringRef Style = Instance->getValueAsString("Style");
+  return llvm::StringSwitch<AttributeStyle>(Style)
+      .Case("cxx11", AttributeStyle::Cxx11)
+      .Case("gnu", AttributeStyle::Gnu)
+      .Case("declspec", AttributeStyle::Declspec)
+      .Default(AttributeStyle::Gnu);
+}
+
+static AttributeNamespace getAttributeNamespace(llvm::Record *Instance) {
+  llvm::StringRef Namespace = Instance->getValueAsString("Namespace");
+  return llvm::StringSwitch<AttributeNamespace>(Namespace)
+      .Case("clang", AttributeNamespace::Clang)
+      .Case("gnu", AttributeNamespace::Gnu)
+      .Default(AttributeNamespace::None);
+}
+
+using AttributeMap = llvm::DenseMap<llvm::StringRef, llvm::Record *>;
+
+template <class SpecMap, class FuncList>
+static AttributeMap collectAttributeMacros(const SpecMap &Spec,
+                                           const FuncList &Funcs) {
+  llvm::DenseMap<llvm::StringRef, llvm::Record *> MacroAttr;
+  for (const auto &Name : Funcs) {
+    auto Iter = Spec.find(Name);
+    if (Iter == Spec.end())
+      continue;
+
+    llvm::Record *FunctionSpec = Iter->second;
+    std::vector<llvm::Record *> Attributes =
+        FunctionSpec->getValueAsListOfDefs("Attributes");
+    for (llvm::Record *Attr : Attributes)
+      MacroAttr[Attr->getValueAsString("Macro")] = Attr;
+  }
+  return MacroAttr;
+}
+
+static void emitAttributeMacroDecls(const AttributeMap &MacroAttr,
+                                    llvm::raw_ostream &OS) {
+  for (auto &[Macro, Attr] : MacroAttr) {
+    std::vector<llvm::Record *> Instances =
+        Attr->getValueAsListOfDefs("Instances");
+    llvm::SmallVector<std::pair<AttributeStyle, llvm::Record *>> Styles;
+    std::transform(Instances.begin(), Instances.end(),
+                   std::back_inserter(Styles),
+                   [&](llvm::Record *Instance)
+                       -> std::pair<AttributeStyle, llvm::Record *> {
+                     auto Style = getAttributeStyle(Instance);
+                     return {Style, Instance};
+                   });
+    // 1. If __cplusplus is defined and cxx11 style is provided, define the
+    // macro using cxx11 version with the following priority:
+    //    1a. If there is no namespace (so the macro is supposed to be
+    //        compiler-independent), use this version first. This macro will be
+    //        tested via __has_cpp_attribute.
+    //    1b. If the attribute is a clang attribute, check for __clang__.
+    //    1c. If the attribute is a gnu attribute, check for __GNUC__.
+    // 2. Otherwise, if __GNUC__ is defined and gnu style is provided,
+    //    define the macro using gnu version;
+    // 3. Otherwise, if _MSC_VER is defined and __declspec is provided, define
+    //    the macro using __declspec version;
+    // 4. Fallback to empty macro.
+    std::sort(Styles.begin(), Styles.end(), [&](auto &a, auto &b) {
+      if (a.first == AttributeStyle::Cxx11 && b.first == AttributeStyle::Cxx11)
+        return getAttributeNamespace(a.second) <
+               getAttributeNamespace(b.second);
+      return a.first < b.first;
+    });
+    for (auto &[Style, Instance] : Styles) {
+      llvm::StringRef Attr = Instance->getValueAsString("Attr");
+      if (Style == AttributeStyle::Cxx11) {
+        OS << "#if !defined(" << Macro << ") && defined(__cplusplus)";
+        AttributeNamespace Namespace = getAttributeNamespace(Instance);
+        if (Namespace == AttributeNamespace::Clang)
+          OS << " && defined(__clang__)\n";
+        else if (Namespace == AttributeNamespace::Gnu)
+          OS << " && defined(__GNUC__)\n";
+        else
+          OS << '\n';
+        if (isAsciiIdentifier(Attr) && Namespace != AttributeNamespace::None)
+          OS << "#if __has_attribute(" << Attr << ")\n";
+        else
+          OS << "#if __has_cpp_attribute(" << Attr << ")\n";
+        OS << "#define " << Macro << " [[";
+        if (Namespace == AttributeNamespace::Clang)
+          OS << "clang::";
+        else if (Namespace == AttributeNamespace::Gnu)
+          OS << "gnu::";
+        OS << Attr << "]]\n";
+        if (isAsciiIdentifier(Attr))
+          OS << "#endif\n";
+        OS << "#endif\n";
+      }
+      if (Style == AttributeStyle::Gnu) {
+        OS << "#if !defined(" << Macro << ") && defined(__GNUC__)\n";
+        if (isAsciiIdentifier(Attr))
+          OS << "#if __has_attribute(" << Attr << ")\n";
+        OS << "#define " << Macro << " __attribute__((";
+        OS << Attr << "))\n";
+        if (isAsciiIdentifier(Attr))
+          OS << "#endif\n";
+        OS << "#endif\n";
+      }
+      if (Style == AttributeStyle::Declspec) {
+        OS << "#if !defined(" << Macro << ") && defined(_MSC_VER)\n";
+        OS << "#define " << Macro << " __declspec(";
+        OS << Attr << ")\n";
+        OS << "#endif\n";
+      }
+    }
+    OS << "#if !defined(" << Macro << ")\n";
+    OS << "#define " << Macro << '\n';
+    OS << "#endif\n";
+  }
+
+  if (!MacroAttr.empty())
+    OS << '\n';
+}
+
+static void emitAttributeMacroForFunction(const llvm::Record *FunctionSpec,
+                                          llvm::raw_ostream &OS) {
+  std::vector<llvm::Record *> Attributes =
+      FunctionSpec->getValueAsListOfDefs("Attributes");
+  llvm::interleave(
+      Attributes.begin(), Attributes.end(),
+      [&](llvm::Record *Attr) { OS << Attr->getValueAsString("Macro"); },
+      [&]() { OS << ' '; });
+  if (!Attributes.empty())
+    OS << ' ';
+}
+
+static void emitUndefsForAttributeMacros(const AttributeMap &MacroAttr,
+                                         llvm::raw_ostream &OS) {
+  if (!MacroAttr.empty())
+    OS << '\n';
+  for (auto &[Macro, Attr] : MacroAttr)
+    OS << "#undef " << Macro << '\n';
+}
+
+static void writeAPIFromIndex(APIIndexer &G,
+                              std::vector<std::string> EntrypointNameList,
+                              llvm::raw_ostream &OS) {
+  for (auto &Pair : G.MacroDefsMap) {
+    const std::string &Name = Pair.first;
+    if (!G.MacroSpecMap.count(Name))
+      llvm::PrintFatalError(Name + " not found in any standard spec.\n");
+
+    llvm::Record *MacroDef = Pair.second;
+    dedentAndWrite(MacroDef->getValueAsString("Defn"), OS);
+
+    OS << '\n';
+  }
+
+  for (auto &TypeName : G.RequiredTypes) {
+    if (!G.TypeSpecMap.count(TypeName))
+      llvm::PrintFatalError(TypeName + " not found in any standard spec.\n");
+    OS << "#include <llvm-libc-types/" << getTypeHdrName(TypeName) << ".h>\n";
+  }
+  OS << '\n';
+
+  if (G.Enumerations.size() != 0)
+    OS << "enum {" << '\n';
+  for (const auto &Name : G.Enumerations) {
+    if (!G.EnumerationSpecMap.count(Name))
+      llvm::PrintFatalError(
+          Name + " is not listed as an enumeration in any standard spec.\n");
+
+    llvm::Record *EnumerationSpec = G.EnumerationSpecMap[Name];
+    OS << "  " << EnumerationSpec->getValueAsString("Name");
+    auto Value = EnumerationSpec->getValueAsString("Value");
+    if (Value == "__default__") {
+      OS << ",\n";
+    } else {
+      OS << " = " << Value << ",\n";
+    }
+  }
+  if (G.Enumerations.size() != 0)
+    OS << "};\n\n";
+
+  // Collect and declare macros for attributes
+  AttributeMap MacroAttr =
+      collectAttributeMacros(G.FunctionSpecMap, EntrypointNameList);
+  emitAttributeMacroDecls(MacroAttr, OS);
+
+  OS << "__BEGIN_C_DECLS\n\n";
+  for (auto &Name : EntrypointNameList) {
+    auto Iter = G.FunctionSpecMap.find(Name);
+
+    // Functions that aren't in this header file are skipped as
+    // opposed to erroring out because the list of functions being
+    // iterated over is the complete list of functions with
+    // entrypoints. Thus this is filtering out the functions that
+    // don't go to this header file, whereas the other, similar
+    // conditionals above are more of a sanity check.
+    if (Iter == G.FunctionSpecMap.end())
+      continue;
+
+    llvm::Record *FunctionSpec = Iter->second;
+    llvm::Record *RetValSpec = FunctionSpec->getValueAsDef("Return");
+    llvm::Record *ReturnType = RetValSpec->getValueAsDef("ReturnType");
+
+    // TODO: https://github.com/llvm/llvm-project/issues/81208
+    //   Ideally, we should group functions based on their guarding macros.
+    bool Guarded =
+        (FunctionSpec->getType()->getAsString() == "GuardedFunctionSpec");
+
+    if (Guarded)
+      OS << "#ifdef " << FunctionSpec->getValueAsString("Guard") << "\n";
+
+    // Emit attribute macros for the function. Space is automatically added.
+    emitAttributeMacroForFunction(FunctionSpec, OS);
+    OS << G.getTypeAsString(ReturnType) << " " << Name << "(";
+
+    auto ArgsList = FunctionSpec->getValueAsListOfDefs("Args");
+    for (size_t i = 0; i < ArgsList.size(); ++i) {
+      llvm::Record *ArgType = ArgsList[i]->getValueAsDef("ArgType");
+      OS << G.getTypeAsString(ArgType);
+      if (i < ArgsList.size() - 1)
+        OS << ", ";
+    }
+
+    OS << ") __NOEXCEPT;\n";
+
+    if (Guarded)
+      OS << "#endif // " << FunctionSpec->getValueAsString("Guard") << "\n";
+
+    OS << "\n";
+  }
+
+  // Make another pass over entrypoints to emit object declarations.
+  for (const auto &Name : EntrypointNameList) {
+    auto Iter = G.ObjectSpecMap.find(Name);
+    if (Iter == G.ObjectSpecMap.end())
+      continue;
+    llvm::Record *ObjectSpec = Iter->second;
+    auto Type = ObjectSpec->getValueAsString("Type");
+    OS << "extern " << Type << " " << Name << ";\n";
+  }
+  OS << "__END_C_DECLS\n";
+
+  // Undef file-level attribute macros.
+  emitUndefsForAttributeMacros(MacroAttr, OS);
+}
 
 void writePublicAPI(llvm::raw_ostream &OS, llvm::RecordKeeper &Records) {}
 
@@ -244,12 +322,11 @@ void PublicAPICommand::run(llvm::raw_ostream &OS, const ArgVector &Args,
                            llvm::StringRef StdHeader,
                            llvm::RecordKeeper &Records,
                            const Command::ErrorReporter &Reporter) const {
-  if (Args.size() != 0) {
+  if (Args.size() != 0)
     Reporter.printFatalError("public_api command does not take any arguments.");
-  }
 
-  APIGenerator G(StdHeader, Records);
-  G.write(OS);
+  APIIndexer G(StdHeader, Records);
+  writeAPIFromIndex(G, EntrypointNameList, OS);
 }
 
 } // namespace llvm_libc

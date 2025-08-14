@@ -23,7 +23,6 @@ namespace llvm {
 /// system, these are also described in /usr/include/mach-o/loader.h.
 class MCSectionMachO final : public MCSection {
   char SegmentName[16];  // Not necessarily null terminated!
-  char SectionName[16];  // Not necessarily null terminated!
 
   /// This is the SECTION_TYPE and SECTION_ATTRIBUTES field of a section, drawn
   /// from the enums below.
@@ -32,6 +31,13 @@ class MCSectionMachO final : public MCSection {
   /// The 'reserved2' field of a section, used to represent the size of stubs,
   /// for example.
   unsigned Reserved2;
+
+  // The index of this section in MachObjectWriter::SectionOrder, which is
+  // different from MCSection::Ordinal.
+  unsigned LayoutOrder = 0;
+
+  // The defining non-temporary symbol for each fragment.
+  SmallVector<const MCSymbol *, 0> Atoms;
 
   MCSectionMachO(StringRef Segment, StringRef Section, unsigned TAA,
                  unsigned reserved2, SectionKind K, MCSymbol *Begin);
@@ -43,12 +49,6 @@ public:
     if (SegmentName[15])
       return StringRef(SegmentName, 16);
     return StringRef(SegmentName);
-  }
-  StringRef getSectionName() const {
-    // SectionName is not necessarily null terminated!
-    if (SectionName[15])
-      return StringRef(SectionName, 16);
-    return StringRef(SectionName);
   }
 
   unsigned getTypeAndAttributes() const { return TypeAndAttributes; }
@@ -66,20 +66,26 @@ public:
   /// appear after a .section directive in a mach-o flavored .s file.  If
   /// successful, this fills in the specified Out parameters and returns an
   /// empty string.  When an invalid section specifier is present, this returns
-  /// a string indicating the problem. If no TAA was parsed, TAA is not altered,
+  /// an Error indicating the problem. If no TAA was parsed, TAA is not altered,
   /// and TAAWasSet becomes false.
-  static std::string ParseSectionSpecifier(StringRef Spec,       // In.
-                                           StringRef &Segment,   // Out.
-                                           StringRef &Section,   // Out.
-                                           unsigned  &TAA,       // Out.
-                                           bool      &TAAParsed, // Out.
-                                           unsigned  &StubSize); // Out.
+  static Error ParseSectionSpecifier(StringRef Spec,      // In.
+                                     StringRef &Segment,  // Out.
+                                     StringRef &Section,  // Out.
+                                     unsigned &TAA,       // Out.
+                                     bool &TAAParsed,     // Out.
+                                     unsigned &StubSize); // Out.
 
-  void PrintSwitchToSection(const MCAsmInfo &MAI, const Triple &T,
+  void printSwitchToSection(const MCAsmInfo &MAI, const Triple &T,
                             raw_ostream &OS,
-                            const MCExpr *Subsection) const override;
-  bool UseCodeAlign() const override;
-  bool isVirtualSection() const override;
+                            uint32_t Subsection) const override;
+  bool useCodeAlign() const override;
+
+  void allocAtoms();
+  const MCSymbol *getAtom(size_t I) const;
+  void setAtom(size_t I, const MCSymbol *Sym);
+
+  unsigned getLayoutOrder() const { return LayoutOrder; }
+  void setLayoutOrder(unsigned Value) { LayoutOrder = Value; }
 
   static bool classof(const MCSection *S) {
     return S->getVariant() == SV_MachO;

@@ -14,6 +14,7 @@
 #define LLVM_MC_MCSECTIONCOFF_H
 
 #include "llvm/ADT/StringRef.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/MCSection.h"
 #include "llvm/MC/SectionKind.h"
 #include <cassert>
@@ -24,9 +25,6 @@ class MCSymbol;
 
 /// This represents a section on Windows
 class MCSectionCOFF final : public MCSection {
-  // The memory for this string is stored in the same MCContext as *this.
-  StringRef SectionName;
-
   // FIXME: The following fields should not be mutable, but are for now so the
   // asm parser can honor the .linkonce directive.
 
@@ -51,10 +49,12 @@ class MCSectionCOFF final : public MCSection {
 
 private:
   friend class MCContext;
-  MCSectionCOFF(StringRef Section, unsigned Characteristics,
-                MCSymbol *COMDATSymbol, int Selection, SectionKind K,
-                MCSymbol *Begin)
-      : MCSection(SV_COFF, K, Begin), SectionName(Section),
+  // The storage of Name is owned by MCContext's COFFUniquingMap.
+  MCSectionCOFF(StringRef Name, unsigned Characteristics,
+                MCSymbol *COMDATSymbol, int Selection, MCSymbol *Begin)
+      : MCSection(SV_COFF, Name, Characteristics & COFF::IMAGE_SCN_CNT_CODE,
+                  Characteristics & COFF::IMAGE_SCN_CNT_UNINITIALIZED_DATA,
+                  Begin),
         Characteristics(Characteristics), COMDATSymbol(COMDATSymbol),
         Selection(Selection) {
     assert((Characteristics & 0x00F00000) == 0 &&
@@ -64,20 +64,19 @@ private:
 public:
   /// Decides whether a '.section' directive should be printed before the
   /// section name
-  bool ShouldOmitSectionDirective(StringRef Name, const MCAsmInfo &MAI) const;
+  bool shouldOmitSectionDirective(StringRef Name, const MCAsmInfo &MAI) const;
 
-  StringRef getSectionName() const { return SectionName; }
   unsigned getCharacteristics() const { return Characteristics; }
   MCSymbol *getCOMDATSymbol() const { return COMDATSymbol; }
   int getSelection() const { return Selection; }
 
   void setSelection(int Selection) const;
 
-  void PrintSwitchToSection(const MCAsmInfo &MAI, const Triple &T,
+  void printSwitchToSection(const MCAsmInfo &MAI, const Triple &T,
                             raw_ostream &OS,
-                            const MCExpr *Subsection) const override;
-  bool UseCodeAlign() const override;
-  bool isVirtualSection() const override;
+                            uint32_t Subsection) const override;
+  bool useCodeAlign() const override;
+  StringRef getVirtualSectionKind() const override;
 
   unsigned getOrAssignWinCFISectionID(unsigned *NextID) const {
     if (WinCFISectionID == ~0U)
@@ -86,7 +85,7 @@ public:
   }
 
   static bool isImplicitlyDiscardable(StringRef Name) {
-    return Name.startswith(".debug");
+    return Name.starts_with(".debug");
   }
 
   static bool classof(const MCSection *S) { return S->getVariant() == SV_COFF; }

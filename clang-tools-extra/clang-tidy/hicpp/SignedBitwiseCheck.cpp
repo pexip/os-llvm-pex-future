@@ -9,13 +9,12 @@
 #include "SignedBitwiseCheck.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
+#include "clang/ASTMatchers/ASTMatchers.h"
 
 using namespace clang::ast_matchers;
 using namespace clang::ast_matchers::internal;
 
-namespace clang {
-namespace tidy {
-namespace hicpp {
+namespace clang::tidy::hicpp {
 
 SignedBitwiseCheck::SignedBitwiseCheck(StringRef Name,
                                        ClangTidyContext *Context)
@@ -31,8 +30,8 @@ void SignedBitwiseCheck::storeOptions(ClangTidyOptions::OptionMap &Opts) {
 void SignedBitwiseCheck::registerMatchers(MatchFinder *Finder) {
   const auto SignedIntegerOperand =
       (IgnorePositiveIntegerLiterals
-           ? expr(ignoringImpCasts(hasType(isSignedInteger())),
-                  unless(integerLiteral()))
+           ? expr(ignoringImpCasts(
+                 allOf(hasType(isSignedInteger()), unless(integerLiteral()))))
            : expr(ignoringImpCasts(hasType(isSignedInteger()))))
           .bind("signed-operand");
 
@@ -48,9 +47,7 @@ void SignedBitwiseCheck::registerMatchers(MatchFinder *Finder) {
 
   // Match binary bitwise operations on signed integer arguments.
   Finder->addMatcher(
-      binaryOperator(anyOf(hasOperatorName("^"), hasOperatorName("|"),
-                           hasOperatorName("&"), hasOperatorName("^="),
-                           hasOperatorName("|="), hasOperatorName("&=")),
+      binaryOperator(hasAnyOperatorName("^", "|", "&", "^=", "|=", "&="),
 
                      unless(allOf(hasLHS(IsStdBitmask), hasRHS(IsStdBitmask))),
 
@@ -62,8 +59,7 @@ void SignedBitwiseCheck::registerMatchers(MatchFinder *Finder) {
   // Shifting and complement is not allowed for any signed integer type because
   // the sign bit may corrupt the result.
   Finder->addMatcher(
-      binaryOperator(anyOf(hasOperatorName("<<"), hasOperatorName(">>"),
-                           hasOperatorName("<<="), hasOperatorName(">>=")),
+      binaryOperator(hasAnyOperatorName("<<", ">>", "<<=", ">>="),
                      hasEitherOperand(SignedIntegerOperand),
                      hasLHS(hasType(isInteger())), hasRHS(hasType(isInteger())))
           .bind("binary-sign-interference"),
@@ -83,26 +79,24 @@ void SignedBitwiseCheck::check(const MatchFinder::MatchResult &Result) {
          "No signed operand found in problematic bitwise operations");
 
   bool IsUnary = false;
-  SourceLocation Location;
+  SourceLocation OperatorLoc;
 
   if (const auto *UnaryOp = N.getNodeAs<UnaryOperator>("unary-signed")) {
     IsUnary = true;
-    Location = UnaryOp->getBeginLoc();
+    OperatorLoc = UnaryOp->getOperatorLoc();
   } else {
     if (const auto *BinaryOp =
             N.getNodeAs<BinaryOperator>("binary-no-sign-interference"))
-      Location = BinaryOp->getBeginLoc();
+      OperatorLoc = BinaryOp->getOperatorLoc();
     else if (const auto *BinaryOp =
                  N.getNodeAs<BinaryOperator>("binary-sign-interference"))
-      Location = BinaryOp->getBeginLoc();
+      OperatorLoc = BinaryOp->getOperatorLoc();
     else
       llvm_unreachable("unexpected matcher result");
   }
-  diag(Location, "use of a signed integer operand with a "
-                 "%select{binary|unary}0 bitwise operator")
-      << IsUnary << SignedOperand->getSourceRange();
+  diag(SignedOperand->getBeginLoc(), "use of a signed integer operand with a "
+                                     "%select{binary|unary}0 bitwise operator")
+      << IsUnary << SignedOperand->getSourceRange() << OperatorLoc;
 }
 
-} // namespace hicpp
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::hicpp

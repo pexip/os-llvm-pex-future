@@ -1,4 +1,4 @@
-//===-- ProcessInfo.cpp -----------------------------------------*- C++ -*-===//
+//===-- ProcessInfo.cpp ---------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -9,24 +9,27 @@
 #include "lldb/Utility/ProcessInfo.h"
 
 #include "lldb/Utility/ArchSpec.h"
+#include "lldb/Utility/ScriptedMetadata.h"
 #include "lldb/Utility/Stream.h"
 #include "lldb/Utility/StreamString.h"
 #include "lldb/Utility/UserIDResolver.h"
 #include "llvm/ADT/SmallString.h"
 
 #include <climits>
+#include <optional>
 
 using namespace lldb;
 using namespace lldb_private;
 
 ProcessInfo::ProcessInfo()
-    : m_executable(), m_arguments(), m_environment(), m_uid(UINT32_MAX),
-      m_gid(UINT32_MAX), m_arch(), m_pid(LLDB_INVALID_PROCESS_ID) {}
+    : m_executable(), m_arguments(), m_environment(), m_arch(), m_listener_sp(),
+      m_hijack_listener_sp(), m_shadow_listener_sp() {}
 
 ProcessInfo::ProcessInfo(const char *name, const ArchSpec &arch,
                          lldb::pid_t pid)
-    : m_executable(name), m_arguments(), m_environment(), m_uid(UINT32_MAX),
-      m_gid(UINT32_MAX), m_arch(arch), m_pid(pid) {}
+    : m_executable(name), m_arguments(), m_environment(), m_arch(arch),
+      m_pid(pid), m_listener_sp(), m_hijack_listener_sp(),
+      m_shadow_listener_sp() {}
 
 void ProcessInfo::Clear() {
   m_executable.Clear();
@@ -36,6 +39,7 @@ void ProcessInfo::Clear() {
   m_gid = UINT32_MAX;
   m_arch.Clear();
   m_pid = LLDB_INVALID_PROCESS_ID;
+  m_scripted_metadata_sp.reset();
 }
 
 const char *ProcessInfo::GetName() const {
@@ -75,7 +79,7 @@ void ProcessInfo::SetExecutableFile(const FileSpec &exe_file,
 
 llvm::StringRef ProcessInfo::GetArg0() const { return m_arg0; }
 
-void ProcessInfo::SetArg0(llvm::StringRef arg) { m_arg0 = arg; }
+void ProcessInfo::SetArg0(llvm::StringRef arg) { m_arg0 = std::string(arg); }
 
 void ProcessInfo::SetArguments(char const **argv,
                                bool first_arg_is_executable) {
@@ -109,12 +113,16 @@ void ProcessInfo::SetArguments(const Args &args, bool first_arg_is_executable) {
   }
 }
 
+bool ProcessInfo::IsScriptedProcess() const {
+  return m_scripted_metadata_sp && *m_scripted_metadata_sp;
+}
+
 void ProcessInstanceInfo::Dump(Stream &s, UserIDResolver &resolver) const {
   if (m_pid != LLDB_INVALID_PROCESS_ID)
     s.Printf("    pid = %" PRIu64 "\n", m_pid);
 
-  if (m_parent_pid != LLDB_INVALID_PROCESS_ID)
-    s.Printf(" parent = %" PRIu64 "\n", m_parent_pid);
+  if (ParentProcessIDIsValid())
+    s.Printf(" parent = %" PRIu64 "\n", GetParentProcessID());
 
   if (m_executable) {
     s.Printf("   name = %s\n", m_executable.GetFilename().GetCString());
@@ -143,19 +151,19 @@ void ProcessInstanceInfo::Dump(Stream &s, UserIDResolver &resolver) const {
 
   if (UserIDIsValid()) {
     s.Format("    uid = {0,-5} ({1})\n", GetUserID(),
-             resolver.GetUserName(GetUserID()).getValueOr(""));
+             resolver.GetUserName(GetUserID()).value_or(""));
   }
   if (GroupIDIsValid()) {
     s.Format("    gid = {0,-5} ({1})\n", GetGroupID(),
-             resolver.GetGroupName(GetGroupID()).getValueOr(""));
+             resolver.GetGroupName(GetGroupID()).value_or(""));
   }
   if (EffectiveUserIDIsValid()) {
     s.Format("   euid = {0,-5} ({1})\n", GetEffectiveUserID(),
-             resolver.GetUserName(GetEffectiveUserID()).getValueOr(""));
+             resolver.GetUserName(GetEffectiveUserID()).value_or(""));
   }
   if (EffectiveGroupIDIsValid()) {
     s.Format("   egid = {0,-5} ({1})\n", GetEffectiveGroupID(),
-             resolver.GetGroupName(GetEffectiveGroupID()).getValueOr(""));
+             resolver.GetGroupName(GetEffectiveGroupID()).value_or(""));
   }
 }
 
@@ -185,7 +193,8 @@ void ProcessInstanceInfo::DumpTableHeader(Stream &s, bool show_args,
 void ProcessInstanceInfo::DumpAsTableRow(Stream &s, UserIDResolver &resolver,
                                          bool show_args, bool verbose) const {
   if (m_pid != LLDB_INVALID_PROCESS_ID) {
-    s.Printf("%-6" PRIu64 " %-6" PRIu64 " ", m_pid, m_parent_pid);
+    s.Printf("%-6" PRIu64 " %-6" PRIu64 " ", m_pid,
+             (ParentProcessIDIsValid()) ? GetParentProcessID() : 0);
 
     StreamString arch_strm;
     if (m_arch.IsValid())
@@ -193,7 +202,7 @@ void ProcessInstanceInfo::DumpAsTableRow(Stream &s, UserIDResolver &resolver,
 
     auto print = [&](bool (ProcessInstanceInfo::*isValid)() const,
                      uint32_t (ProcessInstanceInfo::*getID)() const,
-                     llvm::Optional<llvm::StringRef> (UserIDResolver::*getName)(
+                     std::optional<llvm::StringRef> (UserIDResolver::*getName)(
                          UserIDResolver::id_t id)) {
       const char *format = "{0,-10} ";
       if (!(this->*isValid)()) {

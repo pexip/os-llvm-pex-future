@@ -12,17 +12,20 @@
 #include "LoopVectorizationPlanner.h"
 #include "VPlan.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/PointerUnion.h"
 #include "llvm/IR/IRBuilder.h"
 
 namespace llvm {
 
 class LoopVectorizationLegality;
 class LoopVectorizationCostModel;
-class TargetTransformInfo;
 class TargetLibraryInfo;
 
 /// Helper class to create VPRecipies from IR instructions.
 class VPRecipeBuilder {
+  /// The VPlan new recipes are added to.
+  VPlan &Plan;
+
   /// The loop that we evaluate.
   Loop *OrigLoop;
 
@@ -34,6 +37,8 @@ class VPRecipeBuilder {
 
   /// The profitablity analysis.
   LoopVectorizationCostModel &CM;
+
+  PredicatedScalarEvolution &PSE;
 
   VPBuilder &Builder;
 
@@ -47,41 +52,95 @@ class VPRecipeBuilder {
   EdgeMaskCacheTy EdgeMaskCache;
   BlockMaskCacheTy BlockMaskCache;
 
-  // VPlan-VPlan transformations support: Hold a mapping from ingredients to
-  // their recipe. To save on memory, only do so for selected ingredients,
-  // marked by having a nullptr entry in this map. If those ingredients get a
-  // VPWidenRecipe, also avoid compressing other ingredients into it to avoid
-  // having to split such recipes later.
+  // VPlan construction support: Hold a mapping from ingredients to
+  // their recipe.
   DenseMap<Instruction *, VPRecipeBase *> Ingredient2Recipe;
-  VPWidenRecipe *LastExtensibleRecipe = nullptr;
 
-  /// Set the recipe created for given ingredient. This operation is a no-op for
-  /// ingredients that were not marked using a nullptr entry in the map.
+  /// Cross-iteration reduction & first-order recurrence phis for which we need
+  /// to add the incoming value from the backedge after all recipes have been
+  /// created.
+  SmallVector<VPHeaderPHIRecipe *, 4> PhisToFix;
+
+  /// Check if \p I can be widened at the start of \p Range and possibly
+  /// decrease the range such that the returned value holds for the entire \p
+  /// Range. The function should not be called for memory instructions or calls.
+  bool shouldWiden(Instruction *I, VFRange &Range) const;
+
+  /// Check if the load or store instruction \p I should widened for \p
+  /// Range.Start and potentially masked. Such instructions are handled by a
+  /// recipe that takes an additional VPInstruction for the mask.
+  VPWidenMemoryRecipe *tryToWidenMemory(Instruction *I,
+                                        ArrayRef<VPValue *> Operands,
+                                        VFRange &Range);
+
+  /// Check if an induction recipe should be constructed for \p Phi. If so build
+  /// and return it. If not, return null.
+  VPHeaderPHIRecipe *tryToOptimizeInductionPHI(PHINode *Phi,
+                                               ArrayRef<VPValue *> Operands,
+                                               VFRange &Range);
+
+  /// Optimize the special case where the operand of \p I is a constant integer
+  /// induction variable.
+  VPWidenIntOrFpInductionRecipe *
+  tryToOptimizeInductionTruncate(TruncInst *I, ArrayRef<VPValue *> Operands,
+                                 VFRange &Range);
+
+  /// Handle non-loop phi nodes. Return a new VPBlendRecipe otherwise. Currently
+  /// all such phi nodes are turned into a sequence of select instructions as
+  /// the vectorizer currently performs full if-conversion.
+  VPBlendRecipe *tryToBlend(PHINode *Phi, ArrayRef<VPValue *> Operands);
+
+  /// Handle call instructions. If \p CI can be widened for \p Range.Start,
+  /// return a new VPWidenCallRecipe. Range.End may be decreased to ensure same
+  /// decision from \p Range.Start to \p Range.End.
+  VPWidenCallRecipe *tryToWidenCall(CallInst *CI, ArrayRef<VPValue *> Operands,
+                                    VFRange &Range);
+
+  /// Check if \p I has an opcode that can be widened and return a VPWidenRecipe
+  /// if it can. The function should only be called if the cost-model indicates
+  /// that widening should be performed.
+  VPWidenRecipe *tryToWiden(Instruction *I, ArrayRef<VPValue *> Operands,
+                            VPBasicBlock *VPBB);
+
+public:
+  VPRecipeBuilder(VPlan &Plan, Loop *OrigLoop, const TargetLibraryInfo *TLI,
+                  LoopVectorizationLegality *Legal,
+                  LoopVectorizationCostModel &CM,
+                  PredicatedScalarEvolution &PSE, VPBuilder &Builder)
+      : Plan(Plan), OrigLoop(OrigLoop), TLI(TLI), Legal(Legal), CM(CM),
+        PSE(PSE), Builder(Builder) {}
+
+  /// Create and return a widened recipe for \p I if one can be created within
+  /// the given VF \p Range.
+  VPRecipeBase *tryToCreateWidenRecipe(Instruction *Instr,
+                                       ArrayRef<VPValue *> Operands,
+                                       VFRange &Range, VPBasicBlock *VPBB);
+
+  /// Set the recipe created for given ingredient.
   void setRecipe(Instruction *I, VPRecipeBase *R) {
-    if (!Ingredient2Recipe.count(I))
-      return;
-    assert(Ingredient2Recipe[I] == nullptr &&
-           "Recipe already set for ingredient");
+    assert(!Ingredient2Recipe.contains(I) &&
+           "Cannot reset recipe for instruction.");
     Ingredient2Recipe[I] = R;
   }
 
-public:
+  /// Create the mask for the vector loop header block.
+  void createHeaderMask();
+
   /// A helper function that computes the predicate of the block BB, assuming
-  /// that the header block of the loop is set to True. It returns the *entry*
-  /// mask for the block BB.
-  VPValue *createBlockInMask(BasicBlock *BB, VPlanPtr &Plan);
+  /// that the header block of the loop is set to True or the loop mask when
+  /// tail folding.
+  void createBlockInMask(BasicBlock *BB);
+
+  /// Returns the *entry* mask for the block \p BB.
+  VPValue *getBlockInMask(BasicBlock *BB) const;
 
   /// A helper function that computes the predicate of the edge between SRC
   /// and DST.
-  VPValue *createEdgeMask(BasicBlock *Src, BasicBlock *Dst, VPlanPtr &Plan);
+  VPValue *createEdgeMask(BasicBlock *Src, BasicBlock *Dst);
 
-  /// Mark given ingredient for recording its recipe once one is created for
-  /// it.
-  void recordRecipeOf(Instruction *I) {
-    assert((!Ingredient2Recipe.count(I) || Ingredient2Recipe[I] == nullptr) &&
-           "Recipe already set for ingredient");
-    Ingredient2Recipe[I] = nullptr;
-  }
+  /// A helper that returns the previously computed predicate of the edge
+  /// between SRC and DST.
+  VPValue *getEdgeMask(BasicBlock *Src, BasicBlock *Dst) const;
 
   /// Return the recipe created for given ingredient.
   VPRecipeBase *getRecipe(Instruction *I) {
@@ -92,58 +151,27 @@ public:
     return Ingredient2Recipe[I];
   }
 
-  /// Check if \I is a memory instruction to be widened for \p Range.Start and
-  /// potentially masked. Such instructions are handled by a recipe that takes
-  /// an additional VPInstruction for the mask.
-  VPWidenMemoryInstructionRecipe *
-  tryToWidenMemory(Instruction *I, VFRange &Range, VPlanPtr &Plan);
+  /// Build a VPReplicationRecipe for \p I. If it is predicated, add the mask as
+  /// last operand. Range.End may be decreased to ensure same recipe behavior
+  /// from \p Range.Start to \p Range.End.
+  VPReplicateRecipe *handleReplication(Instruction *I, VFRange &Range);
 
-  /// Check if an induction recipe should be constructed for \I within the given
-  /// VF \p Range. If so build and return it. If not, return null. \p Range.End
-  /// may be decreased to ensure same decision from \p Range.Start to
-  /// \p Range.End.
-  VPWidenIntOrFpInductionRecipe *tryToOptimizeInduction(Instruction *I,
-                                                        VFRange &Range);
+  /// Add the incoming values from the backedge to reduction & first-order
+  /// recurrence cross-iteration phis.
+  void fixHeaderPhis();
 
-  /// Handle non-loop phi nodes. Currently all such phi nodes are turned into
-  /// a sequence of select instructions as the vectorizer currently performs
-  /// full if-conversion.
-  VPBlendRecipe *tryToBlend(Instruction *I, VPlanPtr &Plan);
+  /// Returns a range mapping the values of the range \p Operands to their
+  /// corresponding VPValues.
+  iterator_range<mapped_iterator<Use *, std::function<VPValue *(Value *)>>>
+  mapToVPValues(User::op_range Operands);
 
-  /// Check if \p I can be widened within the given VF \p Range. If \p I can be
-  /// widened for \p Range.Start, check if the last recipe of \p VPBB can be
-  /// extended to include \p I or else build a new VPWidenRecipe for it and
-  /// append it to \p VPBB. Return true if \p I can be widened for Range.Start,
-  /// false otherwise. Range.End may be decreased to ensure same decision from
-  /// \p Range.Start to \p Range.End.
-  bool tryToWiden(Instruction *I, VPBasicBlock *VPBB, VFRange &Range);
-
-  /// Create a replicating region for instruction \p I that requires
-  /// predication. \p PredRecipe is a VPReplicateRecipe holding \p I.
-  VPRegionBlock *createReplicateRegion(Instruction *I, VPRecipeBase *PredRecipe,
-                                       VPlanPtr &Plan);
-
-public:
-  VPRecipeBuilder(Loop *OrigLoop, const TargetLibraryInfo *TLI,
-                  LoopVectorizationLegality *Legal,
-                  LoopVectorizationCostModel &CM, VPBuilder &Builder)
-      : OrigLoop(OrigLoop), TLI(TLI), Legal(Legal), CM(CM), Builder(Builder) {}
-
-  /// Check if a recipe can be create for \p I withing the given VF \p Range.
-  /// If a recipe can be created, it adds it to \p VPBB.
-  bool tryToCreateRecipe(Instruction *Instr, VFRange &Range, VPlanPtr &Plan,
-                         VPBasicBlock *VPBB);
-
-  /// Build a VPReplicationRecipe for \p I and enclose it within a Region if it
-  /// is predicated. \return \p VPBB augmented with this new recipe if \p I is
-  /// not predicated, otherwise \return a new VPBasicBlock that succeeds the new
-  /// Region. Update the packing decision of predicated instructions if they
-  /// feed \p I. Range.End may be decreased to ensure same recipe behavior from
-  /// \p Range.Start to \p Range.End.
-  VPBasicBlock *handleReplication(
-      Instruction *I, VFRange &Range, VPBasicBlock *VPBB,
-      DenseMap<Instruction *, VPReplicateRecipe *> &PredInst2Recipe,
-      VPlanPtr &Plan);
+  VPValue *getVPValueOrAddLiveIn(Value *V, VPlan &Plan) {
+    if (auto *I = dyn_cast<Instruction>(V)) {
+      if (auto *R = Ingredient2Recipe.lookup(I))
+        return R->getVPSingleValue();
+    }
+    return Plan.getOrAddLiveIn(V);
+  }
 };
 } // end namespace llvm
 

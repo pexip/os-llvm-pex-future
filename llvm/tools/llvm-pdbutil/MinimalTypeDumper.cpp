@@ -8,19 +8,23 @@
 
 #include "MinimalTypeDumper.h"
 
-#include "FormatUtil.h"
-#include "LinePrinter.h"
 #include "TypeReferenceTracker.h"
 
 #include "llvm-pdbutil.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/DebugInfo/CodeView/CVRecord.h"
 #include "llvm/DebugInfo/CodeView/CVTypeVisitor.h"
 #include "llvm/DebugInfo/CodeView/CodeView.h"
 #include "llvm/DebugInfo/CodeView/Formatters.h"
 #include "llvm/DebugInfo/CodeView/LazyRandomTypeCollection.h"
 #include "llvm/DebugInfo/CodeView/TypeRecord.h"
+#include "llvm/DebugInfo/PDB/Native/FormatUtil.h"
+#include "llvm/DebugInfo/PDB/Native/LinePrinter.h"
+#include "llvm/DebugInfo/PDB/Native/NativeSession.h"
+#include "llvm/DebugInfo/PDB/Native/PDBFile.h"
 #include "llvm/DebugInfo/PDB/Native/TpiHashing.h"
 #include "llvm/DebugInfo/PDB/Native/TpiStream.h"
+#include "llvm/Object/COFF.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -121,6 +125,7 @@ static std::string formatCallingConvention(CallingConvention Convention) {
     RETURN_CASE(CallingConvention, PpcCall, "ppccall");
     RETURN_CASE(CallingConvention, SHCall, "shcall");
     RETURN_CASE(CallingConvention, SH5Call, "sh5call");
+    RETURN_CASE(CallingConvention, Swift, "swift");
     RETURN_CASE(CallingConvention, ThisCall, "thiscall");
     RETURN_CASE(CallingConvention, TriCall, "tricall");
   }
@@ -201,8 +206,9 @@ static std::string formatPointerAttrs(const PointerRecord &Record) {
   PointerMode Mode = Record.getMode();
   PointerOptions Opts = Record.getOptions();
   PointerKind Kind = Record.getPointerKind();
-  return formatv("mode = {0}, opts = {1}, kind = {2}", formatPointerMode(Mode),
-                 pointerOptions(Opts), pointerKind(Kind));
+  return std::string(formatv("mode = {0}, opts = {1}, kind = {2}",
+                             formatPointerMode(Mode), pointerOptions(Opts),
+                             pointerKind(Kind)));
 }
 
 static std::string formatFunctionOptions(FunctionOptions Options) {
@@ -302,7 +308,7 @@ Error MinimalTypeDumpVisitor::visitKnownRecord(CVType &CVR,
   if (Indices.empty())
     return Error::success();
 
-  auto Max = std::max_element(Indices.begin(), Indices.end());
+  auto Max = llvm::max_element(Indices);
   uint32_t W = NumDigits(Max->getIndex()) + 2;
 
   for (auto I : Indices)
@@ -317,7 +323,7 @@ Error MinimalTypeDumpVisitor::visitKnownRecord(CVType &CVR,
   if (Indices.empty())
     return Error::success();
 
-  auto Max = std::max_element(Indices.begin(), Indices.end());
+  auto Max = llvm::max_element(Indices);
   uint32_t W = NumDigits(Max->getIndex()) + 2;
 
   for (auto I : Indices)
@@ -487,7 +493,7 @@ Error MinimalTypeDumpVisitor::visitKnownRecord(CVType &CVR,
   if (Indices.empty())
     return Error::success();
 
-  auto Max = std::max_element(Indices.begin(), Indices.end());
+  auto Max = llvm::max_element(Indices);
   uint32_t W = NumDigits(Max->getIndex()) + 2;
 
   for (auto I : Indices)
@@ -556,7 +562,7 @@ Error MinimalTypeDumpVisitor::visitKnownMember(CVMemberRecord &CVR,
 Error MinimalTypeDumpVisitor::visitKnownMember(CVMemberRecord &CVR,
                                                EnumeratorRecord &Enum) {
   P.format(" [{0} = {1}]", Enum.Name,
-           Enum.Value.toString(10, Enum.Value.isSigned()));
+           toString(Enum.Value, 10, Enum.Value.isSigned()));
   return Error::success();
 }
 

@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=aarch64 %s -o - | FileCheck --check-prefixes=CHECK %s
+; RUN: llc -mtriple=aarch64 -aarch64-min-jump-table-entries=4 %s -o - | FileCheck %s
 
 define void @f0() "patchable-function-entry"="0" "branch-target-enforcement" {
 ; CHECK-LABEL: f0:
@@ -21,7 +21,7 @@ define void @f1() "patchable-function-entry"="1" "branch-target-enforcement" {
 ; CHECK-NEXT: .Lpatch0:
 ; CHECK-NEXT:  nop
 ; CHECK-NEXT:  ret
-; CHECK:      .section __patchable_function_entries,"awo",@progbits,f1,unique,0
+; CHECK:      .section __patchable_function_entries,"awo",@progbits,f1{{$}}
 ; CHECK-NEXT: .p2align 3
 ; CHECK-NEXT: .xword .Lpatch0
   ret void
@@ -41,26 +41,27 @@ define void @f2_1() "patchable-function-entry"="1" "patchable-function-prefix"="
 ; CHECK-NEXT:  ret
 ; CHECK:      .Lfunc_end2:
 ; CHECK-NEXT: .size f2_1, .Lfunc_end2-f2_1
-; CHECK:      .section __patchable_function_entries,"awo",@progbits,f1,unique,0
+; CHECK:      .section __patchable_function_entries,"awo",@progbits,f2_1{{$}}
 ; CHECK-NEXT: .p2align 3
 ; CHECK-NEXT: .xword .Ltmp0
   ret void
 }
 
 ;; -fpatchable-function-entry=1 -mbranch-protection=bti
-;; For M=0, don't create .Lpatch0 if the initial instruction is not BTI,
-;; even if other basic blocks may have BTI.
+;; We add BTI c even when the function has internal linkage
 define internal void @f1i(i64 %v) "patchable-function-entry"="1" "branch-target-enforcement" {
 ; CHECK-LABEL: f1i:
 ; CHECK-NEXT: .Lfunc_begin3:
 ; CHECK:      // %bb.0:
+; CHECK-NEXT:  hint #34
+; CHECK-NEXT:  .Lpatch1:
 ; CHECK-NEXT:  nop
 ;; Other basic blocks have BTI, but they don't affect our decision to not create .Lpatch0
 ; CHECK:      .LBB{{.+}} // %sw.bb1
 ; CHECK-NEXT:  hint #36
-; CHECK:      .section __patchable_function_entries,"awo",@progbits,f1,unique,0
+; CHECK:      .section __patchable_function_entries,"awo",@progbits,f1i{{$}}
 ; CHECK-NEXT: .p2align 3
-; CHECK-NEXT: .xword .Lfunc_begin3
+; CHECK-NEXT: .xword .Lpatch1
 entry:
   switch i64 %v, label %sw.bb0 [
     i64 1, label %sw.bb1
@@ -69,7 +70,7 @@ entry:
     i64 4, label %sw.bb4
   ]
 sw.bb0:
-  call void asm sideeffect "", ""()
+  call void asm sideeffect "nop", ""()
   ret void
 sw.bb1:
   call void asm sideeffect "", ""()
@@ -84,3 +85,22 @@ sw.bb4:
   call void asm sideeffect "", ""()
   ret void
 }
+
+;; Test the interaction with -fsanitize=function.
+; CHECK:      .type sanitize_function,@function
+; CHECK-NEXT: .Ltmp{{.*}}:
+; CHECK-NEXT:   nop
+; CHECK-NEXT:   .word   3238382334  // 0xc105cafe
+; CHECK-NEXT:   .word   42
+; CHECK-NEXT: sanitize_function:
+; CHECK-NEXT: .Lfunc_begin{{.*}}:
+; CHECK-NEXT:   .cfi_startproc
+; CHECK-NEXT:   // %bb.0:
+; CHECK-NEXT:   hint #34
+; CHECK-NEXT:   nop
+; CHECK-NEXT:   ret
+define void @sanitize_function(ptr noundef %x) "patchable-function-prefix"="1" "patchable-function-entry"="1" "branch-target-enforcement" !func_sanitize !0 {
+  ret void
+}
+
+!0 = !{i32 3238382334, i32 42}

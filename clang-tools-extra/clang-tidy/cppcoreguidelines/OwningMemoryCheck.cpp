@@ -17,17 +17,16 @@
 using namespace clang::ast_matchers;
 using namespace clang::ast_matchers::internal;
 
-namespace clang {
-namespace tidy {
-namespace cppcoreguidelines {
+namespace clang::tidy::cppcoreguidelines {
 
-// FIXME: Copied from 'NoMallocCheck.cpp'. Has to be refactored into 'util' or
-// something like that.
 namespace {
-Matcher<FunctionDecl> hasAnyListedName(const std::string &FunctionNames) {
-  const std::vector<std::string> NameList =
-      utils::options::parseStringList(FunctionNames);
-  return hasAnyName(std::vector<StringRef>(NameList.begin(), NameList.end()));
+AST_MATCHER_P(LambdaExpr, hasCallOperator, Matcher<CXXMethodDecl>,
+              InnerMatcher) {
+  return InnerMatcher.matches(*Node.getCallOperator(), Finder, Builder);
+}
+
+AST_MATCHER_P(LambdaExpr, hasLambdaBody, Matcher<Stmt>, InnerMatcher) {
+  return InnerMatcher.matches(*Node.getBody(), Finder, Builder);
 }
 } // namespace
 
@@ -39,15 +38,13 @@ void OwningMemoryCheck::storeOptions(ClangTidyOptions::OptionMap &Opts) {
 /// Match common cases, where the owner semantic is relevant, like function
 /// calls, delete expressions and others.
 void OwningMemoryCheck::registerMatchers(MatchFinder *Finder) {
-  if (!getLangOpts().CPlusPlus11)
-    return;
-
   const auto OwnerDecl = typeAliasTemplateDecl(hasName("::gsl::owner"));
   const auto IsOwnerType = hasType(OwnerDecl);
 
-  const auto LegacyCreatorFunctions = hasAnyListedName(LegacyResourceProducers);
+  const auto LegacyCreatorFunctions =
+      hasAnyName(utils::options::parseStringList(LegacyResourceProducers));
   const auto LegacyConsumerFunctions =
-      hasAnyListedName(LegacyResourceConsumers);
+      hasAnyName(utils::options::parseStringList(LegacyResourceConsumers));
 
   // Legacy functions that are use for resource management but cannot be
   // updated to use `gsl::owner<>`, like standard C memory management.
@@ -55,7 +52,7 @@ void OwningMemoryCheck::registerMatchers(MatchFinder *Finder) {
       callExpr(callee(functionDecl(LegacyCreatorFunctions)));
   // C-style functions like `::malloc()` sometimes create owners as void*
   // which is expected to be cast to the correct type in C++. This case
-  // must be catched explicitly.
+  // must be caught explicitly.
   const auto LegacyOwnerCast =
       castExpr(hasSourceExpression(CreatesLegacyOwner));
   // Functions that do manual resource management but cannot be updated to use
@@ -69,13 +66,15 @@ void OwningMemoryCheck::registerMatchers(MatchFinder *Finder) {
             CreatesLegacyOwner, LegacyOwnerCast);
 
   const auto ConsideredOwner = eachOf(IsOwnerType, CreatesOwner);
+  const auto ScopeDeclaration = anyOf(translationUnitDecl(), namespaceDecl(),
+                                      recordDecl(), functionDecl());
 
   // Find delete expressions that delete non-owners.
   Finder->addMatcher(
-      cxxDeleteExpr(
-          hasDescendant(
-              declRefExpr(unless(ConsideredOwner)).bind("deleted_variable")))
-          .bind("delete_expr"),
+      traverse(TK_AsIs,
+               cxxDeleteExpr(hasDescendant(declRefExpr(unless(ConsideredOwner))
+                                               .bind("deleted_variable")))
+                   .bind("delete_expr")),
       this);
 
   // Ignoring the implicit casts is vital because the legacy owners do not work
@@ -86,24 +85,28 @@ void OwningMemoryCheck::registerMatchers(MatchFinder *Finder) {
   // resources. This check assumes that all pointer arguments of a legacy
   // functions shall be 'gsl::owner<>'.
   Finder->addMatcher(
-      callExpr(callee(LegacyOwnerConsumers),
-               hasAnyArgument(expr(unless(ignoringImpCasts(ConsideredOwner)),
-                                   hasType(pointerType()))))
-          .bind("legacy_consumer"),
+      traverse(TK_AsIs, callExpr(callee(LegacyOwnerConsumers),
+                                 hasAnyArgument(expr(
+                                     unless(ignoringImpCasts(ConsideredOwner)),
+                                     hasType(pointerType()))))
+                            .bind("legacy_consumer")),
       this);
 
   // Matching assignment to owners, with the rhs not being an owner nor creating
   // one.
-  Finder->addMatcher(binaryOperator(matchers::isAssignmentOperator(),
-                                    hasLHS(IsOwnerType),
-                                    hasRHS(unless(ConsideredOwner)))
-                         .bind("owner_assignment"),
-                     this);
+  Finder->addMatcher(
+      traverse(TK_AsIs,
+               binaryOperator(isAssignmentOperator(), hasLHS(IsOwnerType),
+                              hasRHS(unless(ConsideredOwner)))
+                   .bind("owner_assignment")),
+      this);
 
   // Matching initialization of owners with non-owners, nor creating owners.
   Finder->addMatcher(
-      namedDecl(varDecl(hasInitializer(unless(ConsideredOwner)), IsOwnerType)
-                    .bind("owner_initialization")),
+      traverse(TK_AsIs,
+               namedDecl(
+                   varDecl(hasInitializer(unless(ConsideredOwner)), IsOwnerType)
+                       .bind("owner_initialization"))),
       this);
 
   const auto HasConstructorInitializerForOwner =
@@ -118,11 +121,13 @@ void OwningMemoryCheck::registerMatchers(MatchFinder *Finder) {
 
   // Match class member initialization that expects owners, but does not get
   // them.
-  Finder->addMatcher(cxxRecordDecl(HasConstructorInitializerForOwner), this);
+  Finder->addMatcher(
+      traverse(TK_AsIs, cxxRecordDecl(HasConstructorInitializerForOwner)),
+      this);
 
   // Matching on assignment operations where the RHS is a newly created owner,
   // but the LHS is not an owner.
-  Finder->addMatcher(binaryOperator(matchers::isAssignmentOperator(),
+  Finder->addMatcher(binaryOperator(isAssignmentOperator(),
                                     hasLHS(unless(IsOwnerType)),
                                     hasRHS(CreatesOwner))
                          .bind("bad_owner_creation_assignment"),
@@ -131,11 +136,9 @@ void OwningMemoryCheck::registerMatchers(MatchFinder *Finder) {
   // Matching on initialization operations where the initial value is a newly
   // created owner, but the LHS is not an owner.
   Finder->addMatcher(
-      namedDecl(varDecl(eachOf(allOf(hasInitializer(CreatesOwner),
-                                     unless(IsOwnerType)),
-                               allOf(hasInitializer(ConsideredOwner),
-                                     hasType(autoType().bind("deduced_type")))))
-                    .bind("bad_owner_creation_variable")),
+      traverse(TK_AsIs, namedDecl(varDecl(hasInitializer(CreatesOwner),
+                                          unless(IsOwnerType))
+                                      .bind("bad_owner_creation_variable"))),
       this);
 
   // Match on all function calls that expect owners as arguments, but didn't
@@ -154,13 +157,51 @@ void OwningMemoryCheck::registerMatchers(MatchFinder *Finder) {
                              .bind("bad_owner_creation_parameter"))),
                      this);
 
+  auto IsNotInSubLambda = stmt(
+      hasAncestor(
+          stmt(anyOf(equalsBoundNode("body"), lambdaExpr())).bind("scope")),
+      hasAncestor(stmt(equalsBoundNode("scope"), equalsBoundNode("body"))));
+
   // Matching on functions, that return an owner/resource, but don't declare
   // their return type as owner.
   Finder->addMatcher(
-      functionDecl(hasDescendant(returnStmt(hasReturnValue(ConsideredOwner))
-                                     .bind("bad_owner_return")),
-                   unless(returns(qualType(hasDeclaration(OwnerDecl)))))
-          .bind("function_decl"),
+      functionDecl(
+          decl().bind("function_decl"),
+          hasBody(
+              stmt(stmt().bind("body"),
+                   hasDescendant(
+                       returnStmt(hasReturnValue(ConsideredOwner),
+                                  // Ignore sub-lambda expressions
+                                  IsNotInSubLambda,
+                                  // Ignore sub-functions
+                                  hasAncestor(functionDecl().bind("context")),
+                                  hasAncestor(functionDecl(
+                                      equalsBoundNode("context"),
+                                      equalsBoundNode("function_decl"))))
+                           .bind("bad_owner_return")))),
+          returns(qualType(unless(hasDeclaration(OwnerDecl))).bind("result"))),
+      this);
+
+  // Matching on lambdas, that return an owner/resource, but don't declare
+  // their return type as owner.
+  Finder->addMatcher(
+      lambdaExpr(
+          hasAncestor(decl(ScopeDeclaration).bind("scope-decl")),
+          hasLambdaBody(
+              stmt(stmt().bind("body"),
+                   hasDescendant(
+                       returnStmt(
+                           hasReturnValue(ConsideredOwner),
+                           // Ignore sub-lambdas
+                           IsNotInSubLambda,
+                           // Ignore sub-functions
+                           hasAncestor(decl(ScopeDeclaration).bind("context")),
+                           hasAncestor(decl(equalsBoundNode("context"),
+                                            equalsBoundNode("scope-decl"))))
+                           .bind("bad_owner_return")))),
+          hasCallOperator(returns(
+              qualType(unless(hasDeclaration(OwnerDecl))).bind("result"))))
+          .bind("lambda"),
       this);
 
   // Match on classes that have an owner as member, but don't declare a
@@ -186,6 +227,7 @@ void OwningMemoryCheck::check(const MatchFinder::MatchResult &Result) {
   CheckExecuted |= handleReturnValues(Nodes);
   CheckExecuted |= handleOwnerMembers(Nodes);
 
+  (void)CheckExecuted;
   assert(CheckExecuted &&
          "None of the subroutines executed, logic error in matcher!");
 }
@@ -219,7 +261,7 @@ bool OwningMemoryCheck::handleLegacyConsumers(const BoundNodes &Nodes) {
   // Result of matching for legacy consumer-functions like `::free()`.
   const auto *LegacyConsumer = Nodes.getNodeAs<CallExpr>("legacy_consumer");
 
-  // FIXME: `freopen` should be handled seperately because it takes the filename
+  // FIXME: `freopen` should be handled separately because it takes the filename
   // as a pointer, which should not be an owner. The argument that is an owner
   // is known and the false positive coming from the filename can be avoided.
   if (LegacyConsumer) {
@@ -317,13 +359,6 @@ bool OwningMemoryCheck::handleAssignmentFromNewOwner(const BoundNodes &Nodes) {
 
     // FIXME: FixitHint to rewrite the type of the initialized variable
     // as 'gsl::owner<OriginalType>'
-
-    // If the type of the variable was deduced, the wrapping owner typedef is
-    // eliminated, therefore the check emits a special note for that case.
-    if (Nodes.getNodeAs<AutoType>("deduced_type")) {
-      diag(BadOwnerInitialization->getBeginLoc(),
-           "type deduction did not result in an owner", DiagnosticIDs::Note);
-    }
     return true;
   }
 
@@ -345,7 +380,7 @@ bool OwningMemoryCheck::handleReturnValues(const BoundNodes &Nodes) {
   // Function return statements, that are owners/resources, but the function
   // declaration does not declare its return value as owner.
   const auto *BadReturnType = Nodes.getNodeAs<ReturnStmt>("bad_owner_return");
-  const auto *Function = Nodes.getNodeAs<FunctionDecl>("function_decl");
+  const auto *ResultType = Nodes.getNodeAs<QualType>("result");
 
   // Function return values, that should be owners but aren't.
   if (BadReturnType) {
@@ -354,8 +389,9 @@ bool OwningMemoryCheck::handleReturnValues(const BoundNodes &Nodes) {
     diag(BadReturnType->getBeginLoc(),
          "returning a newly created resource of "
          "type %0 or 'gsl::owner<>' from a "
-         "function whose return type is not 'gsl::owner<>'")
-        << Function->getReturnType() << BadReturnType->getSourceRange();
+         "%select{function|lambda}1 whose return type is not 'gsl::owner<>'")
+        << *ResultType << (Nodes.getNodeAs<Expr>("lambda") != nullptr)
+        << BadReturnType->getSourceRange();
 
     // FIXME: Rewrite the return type as 'gsl::owner<OriginalType>'
     return true;
@@ -384,6 +420,4 @@ bool OwningMemoryCheck::handleOwnerMembers(const BoundNodes &Nodes) {
   return false;
 }
 
-} // namespace cppcoreguidelines
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::cppcoreguidelines

@@ -6,12 +6,16 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLDB_SBStream_h_
-#define LLDB_SBStream_h_
+#ifndef LLDB_API_SBSTREAM_H
+#define LLDB_API_SBSTREAM_H
 
-#include <stdio.h>
+#include <cstdio>
 
 #include "lldb/API/SBDefines.h"
+
+namespace lldb_private {
+class ScriptInterpreter;
+} // namespace lldb_private
 
 namespace lldb {
 
@@ -19,7 +23,9 @@ class LLDB_API SBStream {
 public:
   SBStream();
 
+#ifndef SWIG
   SBStream(SBStream &&rhs);
+#endif
 
   ~SBStream();
 
@@ -35,7 +41,11 @@ public:
   // for the stream output whose length can be accessed using this accessor.
   size_t GetSize();
 
-  void Printf(const char *format, ...) __attribute__((format(printf, 2, 3)));
+#ifndef SWIG
+  __attribute__((format(printf, 2, 3))) void Printf(const char *format, ...);
+#endif
+
+  void Print(const char *str);
 
   void RedirectToFile(const char *path, bool append);
 
@@ -43,7 +53,9 @@ public:
 
   void RedirectToFile(lldb::FileSP file);
 
+#ifndef SWIG
   void RedirectToFileHandle(FILE *fh, bool transfer_fh_ownership);
+#endif
 
   void RedirectToFileDescriptor(int fd, bool transfer_fh_ownership);
 
@@ -54,6 +66,8 @@ public:
 
 protected:
   friend class SBAddress;
+  friend class SBAddressRange;
+  friend class SBAddressRangeList;
   friend class SBBlock;
   friend class SBBreakpoint;
   friend class SBBreakpointLocation;
@@ -70,6 +84,7 @@ protected:
   friend class SBFunction;
   friend class SBInstruction;
   friend class SBInstructionList;
+  friend class SBLaunchInfo;
   friend class SBLineEntry;
   friend class SBMemoryRegionInfo;
   friend class SBModule;
@@ -92,6 +107,8 @@ protected:
   friend class SBValue;
   friend class SBWatchpoint;
 
+  friend class lldb_private::ScriptInterpreter;
+
   lldb_private::Stream *operator->();
 
   lldb_private::Stream *get();
@@ -99,11 +116,12 @@ protected:
   lldb_private::Stream &ref();
 
 private:
-  DISALLOW_COPY_AND_ASSIGN(SBStream);
+  SBStream(const SBStream &) = delete;
+  const SBStream &operator=(const SBStream &) = delete;
   std::unique_ptr<lldb_private::Stream> m_opaque_up;
-  bool m_is_file;
+  bool m_is_file = false;
 };
 
 } // namespace lldb
 
-#endif // LLDB_SBStream_h_
+#endif // LLDB_API_SBSTREAM_H

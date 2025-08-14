@@ -1,5 +1,4 @@
-//===-- MemoryHistory.h ---------------------------------------------------*-
-//C++ -*-===//
+//===-- MemoryHistory.h -----------------------------------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -7,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef liblldb_MemoryHistory_h_
-#define liblldb_MemoryHistory_h_
+#ifndef LLDB_TARGET_MEMORYHISTORY_H
+#define LLDB_TARGET_MEMORYHISTORY_H
 
 #include <vector>
 
@@ -30,4 +29,4 @@ public:
 
 } // namespace lldb_private
 
-#endif // liblldb_MemoryHistory_h_
+#endif // LLDB_TARGET_MEMORYHISTORY_H

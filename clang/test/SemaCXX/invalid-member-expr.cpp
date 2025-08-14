@@ -26,7 +26,7 @@ void test2() {
 // PR6327
 namespace test3 {
   template <class A, class B> struct pair {};
-  template <class _E> class initializer_list {};
+  template <class _E> class initializer_list { const _E *a, *b; };
   template <typename _Tp> pair<_Tp, _Tp> minmax(initializer_list<_Tp> __l) {};
 
   void test0() {
@@ -54,10 +54,7 @@ namespace test3 {
 namespace rdar11293995 {
 
 struct Length {
-  // FIXME: We try to annotate the template-id here during tentative parsing,
-  // and fail, then try again during the actual parse. This results in the same
-  // diagnostic being produced twice. :(
-  explicit Length(PassRefPtr<CalculationValue>); // expected-error 2{{undeclared identifier 'CalculationValue'}}
+  explicit Length(PassRefPtr<CalculationValue>); // expected-error {{undeclared identifier 'CalculationValue'}}
 };
 
 struct LengthSize {

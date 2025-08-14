@@ -1,4 +1,4 @@
-//===-- SBBreakpointOptionCommon.h ------------------------------------------*- C++ -*-===//
+//===-- SBBreakpointOptionCommon.h ------------------------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLDB_SBBreakpointOptionCommons_h_
-#define LLDB_SBBreakpointOptionCommons_h_
+#ifndef LLDB_SOURCE_API_SBBREAKPOINTOPTIONCOMMON_H
+#define LLDB_SOURCE_API_SBBREAKPOINTOPTIONCOMMON_H
 
 #include "lldb/API/SBDefines.h"
 #include "lldb/Utility/Baton.h"
@@ -33,4 +33,4 @@ public:
 };
 
 } // namespace lldb
-#endif // LLDB_SBBreakpointOptionCommons_h_
+#endif // LLDB_SOURCE_API_SBBREAKPOINTOPTIONCOMMON_H

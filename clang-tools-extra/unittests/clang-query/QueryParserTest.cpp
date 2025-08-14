@@ -59,6 +59,7 @@ TEST_F(QueryParserTest, Quit) {
 }
 
 TEST_F(QueryParserTest, Set) {
+
   QueryRef Q = parse("set");
   ASSERT_TRUE(isa<InvalidQuery>(Q));
   EXPECT_EQ("expected variable name", cast<InvalidQuery>(Q)->ErrStr);
@@ -110,6 +111,16 @@ TEST_F(QueryParserTest, Set) {
   ASSERT_TRUE(isa<SetQuery<bool> >(Q));
   EXPECT_EQ(&QuerySession::BindRoot, cast<SetQuery<bool> >(Q)->Var);
   EXPECT_EQ(true, cast<SetQuery<bool> >(Q)->Value);
+
+  Q = parse("set traversal AsIs");
+  ASSERT_TRUE(isa<SetQuery<TraversalKind>>(Q));
+  EXPECT_EQ(&QuerySession::TK, cast<SetQuery<TraversalKind>>(Q)->Var);
+  EXPECT_EQ(TK_AsIs, cast<SetQuery<TraversalKind>>(Q)->Value);
+
+  Q = parse("set traversal NotATraversal");
+  ASSERT_TRUE(isa<InvalidQuery>(Q));
+  EXPECT_EQ("expected traversal kind, got 'NotATraversal'",
+            cast<InvalidQuery>(Q)->ErrStr);
 }
 
 TEST_F(QueryParserTest, Match) {
@@ -174,7 +185,7 @@ TEST_F(QueryParserTest, Comment) {
 TEST_F(QueryParserTest, Complete) {
   std::vector<llvm::LineEditor::Completion> Comps =
       QueryParser::complete("", 0, QS);
-  ASSERT_EQ(8u, Comps.size());
+  ASSERT_EQ(9u, Comps.size());
   EXPECT_EQ("help ", Comps[0].TypedText);
   EXPECT_EQ("help", Comps[0].DisplayText);
   EXPECT_EQ("let ", Comps[1].TypedText);
@@ -191,11 +202,18 @@ TEST_F(QueryParserTest, Complete) {
   EXPECT_EQ("disable", Comps[6].DisplayText);
   EXPECT_EQ("unlet ", Comps[7].TypedText);
   EXPECT_EQ("unlet", Comps[7].DisplayText);
+  EXPECT_EQ("file ", Comps[8].TypedText);
+  EXPECT_EQ("file", Comps[8].DisplayText);
 
   Comps = QueryParser::complete("set o", 5, QS);
   ASSERT_EQ(1u, Comps.size());
   EXPECT_EQ("utput ", Comps[0].TypedText);
   EXPECT_EQ("output", Comps[0].DisplayText);
+
+  Comps = QueryParser::complete("set t", 5, QS);
+  ASSERT_EQ(1u, Comps.size());
+  EXPECT_EQ("raversal ", Comps[0].TypedText);
+  EXPECT_EQ("traversal", Comps[0].DisplayText);
 
   Comps = QueryParser::complete("enable ", 7, QS);
   ASSERT_EQ(1u, Comps.size());
@@ -213,6 +231,14 @@ TEST_F(QueryParserTest, Complete) {
   EXPECT_EQ("detailed-ast", Comps[2].DisplayText);
   EXPECT_EQ("dump ", Comps[3].TypedText);
   EXPECT_EQ("dump", Comps[3].DisplayText);
+
+  Comps = QueryParser::complete("set traversal ", 14, QS);
+  ASSERT_EQ(2u, Comps.size());
+
+  EXPECT_EQ("AsIs ", Comps[0].TypedText);
+  EXPECT_EQ("AsIs", Comps[0].DisplayText);
+  EXPECT_EQ("IgnoreUnlessSpelledInSource ", Comps[1].TypedText);
+  EXPECT_EQ("IgnoreUnlessSpelledInSource", Comps[1].DisplayText);
 
   Comps = QueryParser::complete("match while", 11, QS);
   ASSERT_EQ(1u, Comps.size());

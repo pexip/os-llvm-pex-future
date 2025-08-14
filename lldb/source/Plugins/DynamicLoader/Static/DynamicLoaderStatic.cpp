@@ -1,4 +1,4 @@
-//===-- DynamicLoaderStatic.cpp ---------------------------------*- C++ -*-===//
+//===-- DynamicLoaderStatic.cpp -------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -10,12 +10,15 @@
 #include "lldb/Core/PluginManager.h"
 #include "lldb/Core/Section.h"
 #include "lldb/Symbol/ObjectFile.h"
+#include "lldb/Target/SectionLoadList.h"
 #include "lldb/Target/Target.h"
 
 #include "DynamicLoaderStatic.h"
 
 using namespace lldb;
 using namespace lldb_private;
+
+LLDB_PLUGIN_DEFINE(DynamicLoaderStatic)
 
 // Create an instance of this class. This function is filled into the plugin
 // info class that gets handed out by the plugin factory and allows the lldb to
@@ -27,8 +30,19 @@ DynamicLoader *DynamicLoaderStatic::CreateInstance(Process *process,
     const llvm::Triple &triple_ref =
         process->GetTarget().GetArchitecture().GetTriple();
     const llvm::Triple::OSType os_type = triple_ref.getOS();
-    if ((os_type == llvm::Triple::UnknownOS))
-      create = true;
+    const llvm::Triple::ArchType arch_type = triple_ref.getArch();
+    if (os_type == llvm::Triple::UnknownOS) {
+      // The WASM and Hexagon plugin check the ArchType rather than the OSType,
+      // so explicitly reject those here.
+      switch(arch_type) {
+        case llvm::Triple::hexagon:
+        case llvm::Triple::wasm32:
+        case llvm::Triple::wasm64:
+          break;
+        default:
+          create = true;
+      }
+    }
   }
 
   if (!create) {
@@ -50,9 +64,6 @@ DynamicLoader *DynamicLoaderStatic::CreateInstance(Process *process,
 DynamicLoaderStatic::DynamicLoaderStatic(Process *process)
     : DynamicLoader(process) {}
 
-// Destructor
-DynamicLoaderStatic::~DynamicLoaderStatic() {}
-
 /// Called after attaching a process.
 ///
 /// Allow DynamicLoader plug-ins to execute some code after
@@ -73,46 +84,43 @@ void DynamicLoaderStatic::LoadAllImagesAtFileAddresses() {
   // Disable JIT for static dynamic loader targets
   m_process->SetCanJIT(false);
 
-  std::lock_guard<std::recursive_mutex> guard(module_list.GetMutex());
-
-  const size_t num_modules = module_list.GetSize();
-  for (uint32_t idx = 0; idx < num_modules; ++idx) {
-    ModuleSP module_sp(module_list.GetModuleAtIndexUnlocked(idx));
+  Target &target = m_process->GetTarget();
+  for (ModuleSP module_sp : module_list.Modules()) {
     if (module_sp) {
       bool changed = false;
+      bool no_load_addresses = true;
+      // If this module has a section with a load address set in
+      // the target, assume all necessary work is already done. There
+      // may be sections without a load address set intentionally
+      // and we don't want to mutate that.
+      // For a module with no load addresses set, set the load addresses
+      // to slide == 0, the same as the file addresses, in the target.
       ObjectFile *image_object_file = module_sp->GetObjectFile();
       if (image_object_file) {
         SectionList *section_list = image_object_file->GetSectionList();
         if (section_list) {
-          // All sections listed in the dyld image info structure will all
-          // either be fixed up already, or they will all be off by a single
-          // slide amount that is determined by finding the first segment that
-          // is at file offset zero which also has bytes (a file size that is
-          // greater than zero) in the object file.
-
-          // Determine the slide amount (if any)
           const size_t num_sections = section_list->GetSize();
-          size_t sect_idx = 0;
-          for (sect_idx = 0; sect_idx < num_sections; ++sect_idx) {
-            // Iterate through the object file sections to find the first
-            // section that starts of file offset zero and that has bytes in
-            // the file...
+          for (size_t sect_idx = 0; sect_idx < num_sections; ++sect_idx) {
             SectionSP section_sp(section_list->GetSectionAtIndex(sect_idx));
             if (section_sp) {
-              if (m_process->GetTarget().SetSectionLoadAddress(
-                      section_sp, section_sp->GetFileAddress()))
-                changed = true;
+              if (target.GetSectionLoadList().GetSectionLoadAddress(
+                      section_sp) != LLDB_INVALID_ADDRESS) {
+                no_load_addresses = false;
+                break;
+              }
             }
           }
         }
       }
+      if (no_load_addresses)
+        module_sp->SetLoadAddress(target, 0, true /*value_is_offset*/, changed);
 
       if (changed)
         loaded_module_list.AppendIfNeeded(module_sp);
     }
   }
 
-  m_process->GetTarget().ModulesDidLoad(loaded_module_list);
+  target.ModulesDidLoad(loaded_module_list);
 }
 
 ThreadPlanSP
@@ -136,19 +144,7 @@ void DynamicLoaderStatic::Terminate() {
   PluginManager::UnregisterPlugin(CreateInstance);
 }
 
-lldb_private::ConstString DynamicLoaderStatic::GetPluginNameStatic() {
-  static ConstString g_name("static");
-  return g_name;
-}
-
-const char *DynamicLoaderStatic::GetPluginDescriptionStatic() {
+llvm::StringRef DynamicLoaderStatic::GetPluginDescriptionStatic() {
   return "Dynamic loader plug-in that will load any images at the static "
          "addresses contained in each image.";
 }
-
-// PluginInterface protocol
-lldb_private::ConstString DynamicLoaderStatic::GetPluginName() {
-  return GetPluginNameStatic();
-}
-
-uint32_t DynamicLoaderStatic::GetPluginVersion() { return 1; }

@@ -1,4 +1,4 @@
-//===------------------- uncaught_exceptions.pass.cpp ---------------------===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,7 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-// UNSUPPORTED: libcxxabi-no-exceptions
+// UNSUPPORTED: no-exceptions
+
+// __cxa_uncaught_exceptions is not re-exported from libc++ until LLVM 9.
+// XFAIL: using-built-library-before-llvm-9
 
 #include <cxxabi.h>
 #include <cassert>

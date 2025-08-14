@@ -1,24 +1,24 @@
-add_llvm_library(MLIRAffineToStandard
+add_mlir_conversion_library(MLIRAffineToStandard
   AffineToStandard.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/Conversion/AffineToStandard
-)
-add_dependencies(
-  MLIRAffineToStandard
 
-  MLIRAffineOps
-  MLIRStandardOps
-  MLIRIR
-  LLVMCore
-  LLVMSupport
-)
-target_link_libraries(
-  MLIRAffineToStandard
+  DEPENDS
+  MLIRConversionPassIncGen
 
-  MLIRAffineOps
-  MLIRStandardOps
+  LINK_COMPONENTS
+  Core
+
+  LINK_LIBS PUBLIC
+  MLIRAffineDialect
+  MLIRAffineTransforms
+  MLIRAffineUtils
+  MLIRArithDialect
   MLIRIR
-  LLVMCore
-  LLVMSupport
-)
+  MLIRMemRefDialect
+  MLIRPass
+  MLIRSCFDialect
+  MLIRTransforms
+  MLIRVectorDialect
+  )

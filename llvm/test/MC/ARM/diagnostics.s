@@ -173,8 +173,8 @@
         @ p10 and p11 are reserved for NEON
         mcr p10, #2, r5, c1, c1, #4
         mcrr p11, #8, r5, r4, c1
-@ CHECK-ERRORS: error: invalid operand for instruction
-@ CHECK-ERRORS: error: invalid operand for instruction
+@ CHECK-WARN: warning: since v7, cp10 and cp11 are reserved for advanced SIMD or floating point instructions
+@ CHECK-WARN: warning: since v7, cp10 and cp11 are reserved for advanced SIMD or floating point instructions
 
         @ Out of range immediate for MOV
         movw r9, 0x10000
@@ -288,7 +288,7 @@
 @ CHECK-ERRORS: error: 'asr' shift amount must be in range [1,32]
 @ CHECK-ERRORS: 	ssat	r8, #1, r10, asr #33
 @ CHECK-ERRORS: 	    	                  ^
-@ CHECK-ERRORS: error: shift operator 'asr' or 'lsl' expected
+@ CHECK-ERRORS: error: operand must be a register in range [r0, r14]
 @ CHECK-ERRORS:         ssat    r8, #1, r10, lsr #5
 @ CHECK-ERRORS:                              ^
 @ CHECK-ERRORS: error: '#' expected

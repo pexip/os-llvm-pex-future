@@ -14,6 +14,7 @@
 #ifndef LLVM_CLANG_BASIC_TOKENKINDS_H
 #define LLVM_CLANG_BASIC_TOKENKINDS_H
 
+#include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/Support/Compiler.h"
 
 namespace clang {
@@ -43,6 +44,14 @@ enum ObjCKeywordKind {
   NUM_OBJC_KEYWORDS
 };
 
+/// Provides a namespace for notable identifers such as float_t and
+/// double_t.
+enum NotableIdentifierKind {
+#define NOTABLE_IDENTIFIER(X) X,
+#include "clang/Basic/TokenKinds.def"
+  NUM_NOTABLE_IDENTIFIERS
+};
+
 /// Defines the possible values of an on-off-switch (C99 6.10.6p2).
 enum OnOffSwitch {
   OOS_ON, OOS_OFF, OOS_DEFAULT
@@ -67,6 +76,9 @@ const char *getPunctuatorSpelling(TokenKind Kind) LLVM_READNONE;
 /// tokens like 'int' and 'dynamic_cast'. Returns NULL for other token kinds.
 const char *getKeywordSpelling(TokenKind Kind) LLVM_READNONE;
 
+/// Returns the spelling of preprocessor keywords, such as "else".
+const char *getPPKeywordSpelling(PPKeywordKind Kind) LLVM_READNONE;
+
 /// Return true if this is a raw identifier or an identifier kind.
 inline bool isAnyIdentifier(TokenKind K) {
   return (K == tok::identifier) || (K == tok::raw_identifier);
@@ -86,7 +98,7 @@ inline bool isLiteral(TokenKind K) {
   return K == tok::numeric_constant || K == tok::char_constant ||
          K == tok::wide_char_constant || K == tok::utf8_char_constant ||
          K == tok::utf16_char_constant || K == tok::utf32_char_constant ||
-         isStringLiteral(K) || K == tok::header_name;
+         isStringLiteral(K) || K == tok::header_name || K == tok::binary_data;
 }
 
 /// Return true if this is any of tok::annot_* kinds.
@@ -95,7 +107,32 @@ bool isAnnotation(TokenKind K);
 /// Return true if this is an annotation token representing a pragma.
 bool isPragmaAnnotation(TokenKind K);
 
-}  // end namespace tok
-}  // end namespace clang
+inline constexpr bool isRegularKeywordAttribute(TokenKind K) {
+  return (false
+#define KEYWORD_ATTRIBUTE(X, ...) || (K == tok::kw_##X)
+#include "clang/Basic/RegularKeywordAttrInfo.inc"
+  );
+}
+
+} // end namespace tok
+} // end namespace clang
+
+namespace llvm {
+template <> struct DenseMapInfo<clang::tok::PPKeywordKind> {
+  static inline clang::tok::PPKeywordKind getEmptyKey() {
+    return clang::tok::PPKeywordKind::pp_not_keyword;
+  }
+  static inline clang::tok::PPKeywordKind getTombstoneKey() {
+    return clang::tok::PPKeywordKind::NUM_PP_KEYWORDS;
+  }
+  static unsigned getHashValue(const clang::tok::PPKeywordKind &Val) {
+    return static_cast<unsigned>(Val);
+  }
+  static bool isEqual(const clang::tok::PPKeywordKind &LHS,
+                      const clang::tok::PPKeywordKind &RHS) {
+    return LHS == RHS;
+  }
+};
+} // namespace llvm
 
 #endif
