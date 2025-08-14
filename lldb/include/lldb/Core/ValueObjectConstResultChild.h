@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef liblldb_ValueObjectConstResultChild_h_
-#define liblldb_ValueObjectConstResultChild_h_
+#ifndef LLDB_CORE_VALUEOBJECTCONSTRESULTCHILD_H
+#define LLDB_CORE_VALUEOBJECTCONSTRESULTCHILD_H
 
 #include "lldb/Core/ValueObjectChild.h"
 #include "lldb/Core/ValueObjectConstResultImpl.h"
@@ -17,8 +17,8 @@
 #include "lldb/lldb-forward.h"
 #include "lldb/lldb-types.h"
 
-#include <stddef.h>
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
 
 namespace lldb_private {
 class DataExtractor;
@@ -41,9 +41,6 @@ public:
 
   lldb::ValueObjectSP Dereference(Status &error) override;
 
-  ValueObject *CreateChildAtIndex(size_t idx, bool synthetic_array_member,
-                                  int32_t synthetic_index) override;
-
   virtual CompilerType GetCompilerType() {
     return ValueObjectChild::GetCompilerType();
   }
@@ -60,7 +57,7 @@ public:
   size_t GetPointeeData(DataExtractor &data, uint32_t item_idx = 0,
                         uint32_t item_count = 1) override;
 
-  lldb::ValueObjectSP Cast(const CompilerType &compiler_type) override;
+  lldb::ValueObjectSP DoCast(const CompilerType &compiler_type) override;
 
 protected:
   ValueObjectConstResultImpl m_impl;
@@ -70,9 +67,18 @@ private:
   friend class ValueObjectConstResult;
   friend class ValueObjectConstResultImpl;
 
-  DISALLOW_COPY_AND_ASSIGN(ValueObjectConstResultChild);
+  ValueObject *CreateChildAtIndex(size_t idx) override {
+    return m_impl.CreateChildAtIndex(idx);
+  }
+  ValueObject *CreateSyntheticArrayMember(size_t idx) override {
+    return m_impl.CreateSyntheticArrayMember(idx);
+  }
+
+  ValueObjectConstResultChild(const ValueObjectConstResultChild &) = delete;
+  const ValueObjectConstResultChild &
+  operator=(const ValueObjectConstResultChild &) = delete;
 };
 
 } // namespace lldb_private
 
-#endif // liblldb_ValueObjectConstResultChild_h_
+#endif // LLDB_CORE_VALUEOBJECTCONSTRESULTCHILD_H

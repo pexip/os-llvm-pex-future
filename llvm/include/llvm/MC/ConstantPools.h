@@ -13,7 +13,6 @@
 #ifndef LLVM_MC_CONSTANTPOOLS_H
 #define LLVM_MC_CONSTANTPOOLS_H
 
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/SMLoc.h"
@@ -44,7 +43,13 @@ struct ConstantPoolEntry {
 class ConstantPool {
   using EntryVecTy = SmallVector<ConstantPoolEntry, 4>;
   EntryVecTy Entries;
-  std::map<int64_t, const MCSymbolRefExpr *> CachedEntries;
+
+  // Caches of entries that already exist, indexed by their contents
+  // and also the size of the constant.
+  std::map<std::pair<int64_t, unsigned>, const MCSymbolRefExpr *>
+      CachedConstantEntries;
+  DenseMap<std::pair<const MCSymbol *, unsigned>, const MCSymbolRefExpr *>
+      CachedSymbolEntries;
 
 public:
   // Initialize a new empty constant pool

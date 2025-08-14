@@ -1,4 +1,4 @@
-//===-- ConstStringTest.cpp -------------------------------------*- C++ -*-===//
+//===-- ConstStringTest.cpp -----------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -88,6 +88,7 @@ TEST(ConstStringTest, NullAndEmptyStates) {
   EXPECT_TRUE(!null);
   EXPECT_TRUE(null.IsEmpty());
   EXPECT_TRUE(null.IsNull());
+  EXPECT_TRUE(null.GetString().empty());
 }
 
 TEST(ConstStringTest, CompareConstString) {
@@ -136,4 +137,18 @@ TEST(ConstStringTest, CompareStringRef) {
   EXPECT_TRUE(null != "");
   EXPECT_TRUE(null == static_cast<const char *>(nullptr));
   EXPECT_TRUE(null != "bar");
+}
+
+TEST(ConstStringTest, StringConversions) {
+  ConstString foo("foo");
+
+  // Member functions.
+  EXPECT_EQ(llvm::StringRef("foo"), foo.GetStringRef());
+  EXPECT_EQ(std::string("foo"), foo.GetString());
+  EXPECT_STREQ("foo", foo.AsCString());
+
+  // Conversion operators.
+  EXPECT_EQ(llvm::StringRef("foo"), llvm::StringRef(foo));
+  EXPECT_EQ(std::string("foo"), std::string_view(foo));
+  EXPECT_EQ(std::string("foo"), std::string(foo));
 }

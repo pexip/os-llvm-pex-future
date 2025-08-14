@@ -7,45 +7,30 @@
 //===----------------------------------------------------------------------===//
 
 #include "DynamicStaticInitializersCheck.h"
+#include "../utils/FileExtensionsUtils.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 
 using namespace clang::ast_matchers;
 
-namespace clang {
-namespace tidy {
-namespace bugprone {
+namespace clang::tidy::bugprone {
 
 AST_MATCHER(clang::VarDecl, hasConstantDeclaration) {
   const Expr *Init = Node.getInit();
   if (Init && !Init->isValueDependent()) {
     if (Node.isConstexpr())
       return true;
-    return Node.checkInitIsICE();
+    return Node.evaluateValue();
   }
   return false;
 }
 
-DynamicStaticInitializersCheck::DynamicStaticInitializersCheck(StringRef Name,
-                                                               ClangTidyContext *Context)
+DynamicStaticInitializersCheck::DynamicStaticInitializersCheck(
+    StringRef Name, ClangTidyContext *Context)
     : ClangTidyCheck(Name, Context),
-      RawStringHeaderFileExtensions(Options.getLocalOrGlobal(
-        "HeaderFileExtensions", utils::defaultHeaderFileExtensions())) {
-  if (!utils::parseHeaderFileExtensions(RawStringHeaderFileExtensions,
-                                        HeaderFileExtensions, ',')) {
-    llvm::errs() << "Invalid header file extension: "
-                 << RawStringHeaderFileExtensions << "\n";
-  }
-}
-
-void DynamicStaticInitializersCheck::storeOptions(
-    ClangTidyOptions::OptionMap &Opts) {
-  Options.store(Opts, "HeaderFileExtensions", RawStringHeaderFileExtensions);
-}
+      HeaderFileExtensions(Context->getHeaderFileExtensions()) {}
 
 void DynamicStaticInitializersCheck::registerMatchers(MatchFinder *Finder) {
-  if (!getLangOpts().CPlusPlus || getLangOpts().ThreadsafeStatics)
-    return;
   Finder->addMatcher(
       varDecl(hasGlobalStorage(), unless(hasConstantDeclaration())).bind("var"),
       this);
@@ -63,6 +48,4 @@ void DynamicStaticInitializersCheck::check(const MatchFinder::MatchResult &Resul
     << Var;
 }
 
-} // namespace bugprone
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::bugprone

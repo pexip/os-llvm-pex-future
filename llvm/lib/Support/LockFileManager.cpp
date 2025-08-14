@@ -7,22 +7,26 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/LockFileManager.h"
-#include "llvm/ADT/None.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/ErrorOr.h"
+#include "llvm/Support/ExponentialBackoff.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Process.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cerrno>
+#include <chrono>
 #include <ctime>
 #include <memory>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <system_error>
+#include <thread>
 #include <tuple>
+
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -30,7 +34,7 @@
 #include <unistd.h>
 #endif
 
-#if defined(__APPLE__) && defined(__MAC_OS_X_VERSION_MIN_REQUIRED) && (__MAC_OS_X_VERSION_MIN_REQUIRED > 1050)
+#if defined(__APPLE__) && defined(__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__) && (__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__ > 1050)
 #define USE_OSX_GETHOSTUUID 1
 #else
 #define USE_OSX_GETHOSTUUID 0
@@ -47,7 +51,7 @@ using namespace llvm;
 /// \param LockFileName The name of the lock file to read.
 ///
 /// \returns The process ID of the process that owns this lock file
-Optional<std::pair<std::string, int> >
+std::optional<std::pair<std::string, int>>
 LockFileManager::readLockFile(StringRef LockFileName) {
   // Read the owning host and PID out of the lock file. If it appears that the
   // owning process is dead, the lock file is invalid.
@@ -55,14 +59,14 @@ LockFileManager::readLockFile(StringRef LockFileName) {
       MemoryBuffer::getFile(LockFileName);
   if (!MBOrErr) {
     sys::fs::remove(LockFileName);
-    return None;
+    return std::nullopt;
   }
   MemoryBuffer &MB = *MBOrErr.get();
 
   StringRef Hostname;
   StringRef PIDStr;
   std::tie(Hostname, PIDStr) = getToken(MB.getBuffer(), " ");
-  PIDStr = PIDStr.substr(PIDStr.find_first_not_of(" "));
+  PIDStr = PIDStr.substr(PIDStr.find_first_not_of(' '));
   int PID;
   if (!PIDStr.getAsInteger(10, PID)) {
     auto Owner = std::make_pair(std::string(Hostname), PID);
@@ -72,7 +76,7 @@ LockFileManager::readLockFile(StringRef LockFileName) {
 
   // Delete the lock file. It's invalid anyway.
   sys::fs::remove(LockFileName);
-  return None;
+  return std::nullopt;
 }
 
 static std::error_code getHostID(SmallVectorImpl<char> &HostID) {
@@ -83,7 +87,7 @@ static std::error_code getHostID(SmallVectorImpl<char> &HostID) {
   struct timespec wait = {1, 0}; // 1 second.
   uuid_t uuid;
   if (gethostuuid(uuid, &wait) != 0)
-    return std::error_code(errno, std::system_category());
+    return errnoAsErrorCode();
 
   uuid_string_t UUIDStr;
   uuid_unparse(uuid, UUIDStr);
@@ -158,7 +162,7 @@ LockFileManager::LockFileManager(StringRef FileName)
   this->FileName = FileName;
   if (std::error_code EC = sys::fs::make_absolute(this->FileName)) {
     std::string S("failed to obtain absolute path for ");
-    S.append(this->FileName.str());
+    S.append(std::string(this->FileName));
     setError(EC, S);
     return;
   }
@@ -177,7 +181,7 @@ LockFileManager::LockFileManager(StringRef FileName)
   if (std::error_code EC = sys::fs::createUniqueFile(
           UniqueLockFileName, UniqueLockFileID, UniqueLockFileName)) {
     std::string S("failed to create unique file ");
-    S.append(UniqueLockFileName.str());
+    S.append(std::string(UniqueLockFileName));
     setError(EC, S);
     return;
   }
@@ -191,21 +195,18 @@ LockFileManager::LockFileManager(StringRef FileName)
     }
 
     raw_fd_ostream Out(UniqueLockFileID, /*shouldClose=*/true);
-    Out << HostID << ' ';
-#if LLVM_ON_UNIX
-    Out << getpid();
-#else
-    Out << "1";
-#endif
+    Out << HostID << ' ' << sys::Process::getProcessId();
     Out.close();
 
     if (Out.has_error()) {
       // We failed to write out PID, so report the error, remove the
       // unique lock file, and fail.
       std::string S("failed to write to ");
-      S.append(UniqueLockFileName.str());
+      S.append(std::string(UniqueLockFileName));
       setError(Out.error(), S);
       sys::fs::remove(UniqueLockFileName);
+      // Don't call report_fatal_error.
+      Out.clear_error();
       return;
     }
   }
@@ -227,7 +228,7 @@ LockFileManager::LockFileManager(StringRef FileName)
       std::string S("failed to create link ");
       raw_string_ostream OSS(S);
       OSS << LockFileName.str() << " to " << UniqueLockFileName.str();
-      setError(EC, OSS.str());
+      setError(EC, S);
       return;
     }
 
@@ -249,7 +250,7 @@ LockFileManager::LockFileManager(StringRef FileName)
     // ownership.
     if ((EC = sys::fs::remove(LockFileName))) {
       std::string S("failed to remove lockfile ");
-      S.append(UniqueLockFileName.str());
+      S.append(std::string(UniqueLockFileName));
       setError(EC, S);
       return;
     }
@@ -273,7 +274,7 @@ std::string LockFileManager::getErrorMessage() const {
     raw_string_ostream OSS(Str);
     if (!ErrCodeMsg.empty())
       OSS << ": " << ErrCodeMsg;
-    return OSS.str();
+    return Str;
   }
   return "";
 }
@@ -295,24 +296,16 @@ LockFileManager::waitForUnlock(const unsigned MaxSeconds) {
   if (getState() != LFS_Shared)
     return Res_Success;
 
-#ifdef _WIN32
-  unsigned long Interval = 1;
-#else
-  struct timespec Interval;
-  Interval.tv_sec = 0;
-  Interval.tv_nsec = 1000000;
-#endif
-  do {
-    // Sleep for the designated interval, to allow the owning process time to
-    // finish up and remove the lock file.
-    // FIXME: Should we hook in to system APIs to get a notification when the
-    // lock file is deleted?
-#ifdef _WIN32
-    Sleep(Interval);
-#else
-    nanosleep(&Interval, nullptr);
-#endif
+  // Since we don't yet have an event-based method to wait for the lock file,
+  // use randomized exponential backoff, similar to Ethernet collision
+  // algorithm. This improves performance on machines with high core counts
+  // when the file lock is heavily contended by multiple clang processes
+  using namespace std::chrono_literals;
+  ExponentialBackoff Backoff(std::chrono::seconds(MaxSeconds), 10ms, 500ms);
 
+  // Wait first as this is only called when the lock is known to be held.
+  while (Backoff.waitForNextAttempt()) {
+    // FIXME: implement event-based waiting
     if (sys::fs::access(LockFileName.c_str(), sys::fs::AccessMode::Exist) ==
         errc::no_such_file_or_directory) {
       // If the original file wasn't created, somone thought the lock was dead.
@@ -324,25 +317,7 @@ LockFileManager::waitForUnlock(const unsigned MaxSeconds) {
     // If the process owning the lock died without cleaning up, just bail out.
     if (!processStillExecuting((*Owner).first, (*Owner).second))
       return Res_OwnerDied;
-
-    // Exponentially increase the time we wait for the lock to be removed.
-#ifdef _WIN32
-    Interval *= 2;
-#else
-    Interval.tv_sec *= 2;
-    Interval.tv_nsec *= 2;
-    if (Interval.tv_nsec >= 1000000000) {
-      ++Interval.tv_sec;
-      Interval.tv_nsec -= 1000000000;
-    }
-#endif
-  } while (
-#ifdef _WIN32
-           Interval < MaxSeconds * 1000
-#else
-           Interval.tv_sec < (time_t)MaxSeconds
-#endif
-           );
+  }
 
   // Give up.
   return Res_Timeout;

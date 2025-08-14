@@ -1,3 +1,8 @@
+def StructEpollEvent : NamedType<"struct epoll_event">;
+def StructEpollEventPtr : PtrType<StructEpollEvent>;
+
+def StructEpollData : NamedType<"struct epoll_data">;
+
 def Linux : StandardSpec<"Linux"> {
   HeaderSpec Errno = HeaderSpec<
       "errno.h",
@@ -55,8 +60,22 @@ def Linux : StandardSpec<"Linux"> {
         Macro<"EL2NSYNC">,
         Macro<"EADV">,
         Macro<"ECOMM">,
+      ]
+  >;
+
+  HeaderSpec Sched = HeaderSpec<
+      "sched.h",
+      [
+        Macro<"SCHED_OTHER">,
+        Macro<"SCHED_FIFO">,
+        Macro<"SCHED_RR">,
+        Macro<"SCHED_BATCH">,
+        Macro<"SCHED_ISO">,
+        Macro<"SCHED_IDLE">,
+        Macro<"SCHED_DEADLINE">,
       ],
       [], // Types
+      [], // Enumerations
       []  // Functions
   >;
 
@@ -64,11 +83,206 @@ def Linux : StandardSpec<"Linux"> {
       "sys/mman.h",
       [Macro<"MAP_ANONYMOUS">],
       [], // Types
+      [], // Enumerations
+      [
+        FunctionSpec<
+            "mincore",
+            RetValSpec<IntType>,
+            [
+              ArgSpec<VoidPtr>,
+              ArgSpec<SizeTType>,
+              ArgSpec<UnsignedCharPtr>,
+            ]
+        >,
+        FunctionSpec<
+          "mlock2",
+          RetValSpec<IntType>,
+          [
+            ArgSpec<VoidPtr>,
+            ArgSpec<SizeTType>,
+            ArgSpec<UnsignedIntType>,
+          ]
+        >,
+      ]  // Functions
+  >;
+
+
+  HeaderSpec SysPrctl = HeaderSpec<
+      "sys/prctl.h",
+      [], // Macros
+      [], // Types
+      [], // Enumerations
+      [
+        FunctionSpec<
+          "prctl",
+          RetValSpec<IntType>,
+          [
+            ArgSpec<IntType>,
+            ArgSpec<UnsignedLongType>,
+            ArgSpec<UnsignedLongType>,
+            ArgSpec<UnsignedLongType>,
+            ArgSpec<UnsignedLongType>,
+          ]
+        >,
+      ]  // Functions
+  >;
+
+  HeaderSpec SysRandom = HeaderSpec<
+      "sys/random.h",
+      [
+        Macro<"GRND_RANDOM">,
+        Macro<"GRND_NONBLOCK">,
+        Macro<"GRND_INSECURE">,
+      ],
+      [SizeTType, SSizeTType], // Types
+      [], // Enumerations
+      [
+        FunctionSpec<
+          "getrandom",
+          RetValSpec<SSizeTType>,
+          [
+            ArgSpec<VoidPtr>,
+            ArgSpec<SizeTType>,
+            ArgSpec<UnsignedIntType>
+          ]
+        >,
+      ]
+  >;
+
+  HeaderSpec SysTime = HeaderSpec<
+      "sys/time.h",
+      [
+        Macro<"timeradd">,
+        Macro<"timersub">,
+        Macro<"timerclear">,
+        Macro<"timerisset">,
+        Macro<"timercmp">,
+      ],
+      [StructTimevalType], // Types
+      [], // Enumerations
       []  // Functions
+  >;
+
+
+  HeaderSpec SysEpoll = HeaderSpec<
+      "sys/epoll.h",
+      [], // Macros
+      [
+        StructEpollEvent,
+        StructEpollData,
+        SigSetType,
+        StructTimeSpec,
+      ], // Types
+      [], // Enumerations
+      [
+        FunctionSpec<
+          "epoll_create",
+          RetValSpec<IntType>,
+          [
+            ArgSpec<IntType>
+          ]
+        >,
+        FunctionSpec<
+          "epoll_create1",
+          RetValSpec<IntType>,
+          [
+            ArgSpec<IntType>
+          ]
+        >,
+        FunctionSpec<
+          "epoll_ctl",
+          RetValSpec<IntType>,
+          [
+            ArgSpec<IntType>,
+            ArgSpec<IntType>,
+            ArgSpec<IntType>,
+            ArgSpec<StructEpollEventPtr>
+          ]
+        >,
+        FunctionSpec<
+          "epoll_wait",
+          RetValSpec<IntType>,
+          [
+            ArgSpec<IntType>,
+            ArgSpec<StructEpollEventPtr>,
+            ArgSpec<IntType>,
+            ArgSpec<IntType>
+          ]
+        >,
+        FunctionSpec<
+          "epoll_pwait",
+          RetValSpec<IntType>,
+          [
+            ArgSpec<IntType>,
+            ArgSpec<StructEpollEventPtr>,
+            ArgSpec<IntType>,
+            ArgSpec<IntType>,
+            ArgSpec<ConstSigSetPtrType>
+          ]
+        >,
+        FunctionSpec<
+          "epoll_pwait2",
+          RetValSpec<IntType>,
+          [
+            ArgSpec<IntType>,
+            ArgSpec<StructEpollEventPtr>,
+            ArgSpec<IntType>,
+            ArgSpec<ConstStructTimeSpecPtr>,
+            ArgSpec<ConstSigSetPtrType>
+          ]
+        >,
+      ]  // Functions
+  >;
+
+  HeaderSpec Signal = HeaderSpec<
+      "signal.h",
+      [
+        Macro<"NSIG">,
+
+        Macro<"SIGHUP">,
+        Macro<"SIGINT">,
+        Macro<"SIGQUIT">,
+        Macro<"SIGILL">,
+        Macro<"SIGTRAP">,
+        Macro<"SIGABRT">,
+        Macro<"SIGIOT">,
+        Macro<"SIGBUS">,
+        Macro<"SIGFPE">,
+        Macro<"SIGKILL">,
+        Macro<"SIGUSR1">,
+        Macro<"SIGSEGV">,
+        Macro<"SIGUSR2">,
+        Macro<"SIGPIPE">,
+        Macro<"SIGALRM">,
+        Macro<"SIGTERM">,
+        Macro<"SIGSTKFLT">,
+        Macro<"SIGCHLD">,
+        Macro<"SIGCONT">,
+        Macro<"SIGSTOP">,
+        Macro<"SIGTSTP">,
+        Macro<"SIGTTIN">,
+        Macro<"SIGTTOU">,
+        Macro<"SIGURG">,
+        Macro<"SIGXCPU">,
+        Macro<"SIGXFSZ">,
+        Macro<"SIGVTALRM">,
+        Macro<"SIGPROF">,
+        Macro<"SIGWINCH">,
+        Macro<"SIGIO">,
+        Macro<"SIGPOLL">,
+        Macro<"SIGPWR">,
+        Macro<"SIGSYS">,
+        Macro<"SIGUNUSED">,
+      ]
   >;
 
   let Headers = [
     Errno,
+    SysEpoll,
     SysMMan,
+    SysPrctl,
+    SysRandom,
+    SysTime,
+    Signal,
   ];
 }

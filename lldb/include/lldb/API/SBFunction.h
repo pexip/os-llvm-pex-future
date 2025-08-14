@@ -6,10 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLDB_SBFunction_h_
-#define LLDB_SBFunction_h_
+#ifndef LLDB_API_SBFUNCTION_H
+#define LLDB_API_SBFUNCTION_H
 
 #include "lldb/API/SBAddress.h"
+#include "lldb/API/SBAddressRangeList.h"
 #include "lldb/API/SBDefines.h"
 #include "lldb/API/SBInstructionList.h"
 
@@ -44,6 +45,8 @@ public:
 
   lldb::SBAddress GetEndAddress();
 
+  lldb::SBAddressRangeList GetRanges();
+
   const char *GetArgumentName(uint32_t arg_idx);
 
   uint32_t GetPrologueByteSize();
@@ -74,9 +77,9 @@ private:
 
   SBFunction(lldb_private::Function *lldb_object_ptr);
 
-  lldb_private::Function *m_opaque_ptr;
+  lldb_private::Function *m_opaque_ptr = nullptr;
 };
 
 } // namespace lldb
 
-#endif // LLDB_SBFunction_h_
+#endif // LLDB_API_SBFUNCTION_H

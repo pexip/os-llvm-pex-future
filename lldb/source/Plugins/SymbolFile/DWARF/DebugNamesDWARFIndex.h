@@ -6,42 +6,59 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLDB_DEBUGNAMESDWARFINDEX_H
-#define LLDB_DEBUGNAMESDWARFINDEX_H
+#ifndef LLDB_SOURCE_PLUGINS_SYMBOLFILE_DWARF_DEBUGNAMESDWARFINDEX_H
+#define LLDB_SOURCE_PLUGINS_SYMBOLFILE_DWARF_DEBUGNAMESDWARFINDEX_H
 
 #include "Plugins/SymbolFile/DWARF/DWARFIndex.h"
-#include "Plugins/SymbolFile/DWARF/LogChannelDWARF.h"
 #include "Plugins/SymbolFile/DWARF/ManualDWARFIndex.h"
+#include "Plugins/SymbolFile/DWARF/SymbolFileDWARF.h"
 #include "lldb/Utility/ConstString.h"
 #include "llvm/DebugInfo/DWARF/DWARFAcceleratorTable.h"
+#include <optional>
 
-namespace lldb_private {
+namespace lldb_private::plugin {
+namespace dwarf {
 class DebugNamesDWARFIndex : public DWARFIndex {
 public:
   static llvm::Expected<std::unique_ptr<DebugNamesDWARFIndex>>
   Create(Module &module, DWARFDataExtractor debug_names,
-         DWARFDataExtractor debug_str, DWARFDebugInfo *debug_info);
+         DWARFDataExtractor debug_str, SymbolFileDWARF &dwarf);
 
   void Preload() override { m_fallback.Preload(); }
 
-  void GetGlobalVariables(ConstString basename, DIEArray &offsets) override;
-  void GetGlobalVariables(const RegularExpression &regex,
-                          DIEArray &offsets) override;
-  void GetGlobalVariables(const DWARFUnit &cu, DIEArray &offsets) override;
-  void GetObjCMethods(ConstString class_name, DIEArray &offsets) override {}
-  void GetCompleteObjCClass(ConstString class_name, bool must_be_implementation,
-                            DIEArray &offsets) override;
-  void GetTypes(ConstString name, DIEArray &offsets) override;
-  void GetTypes(const DWARFDeclContext &context, DIEArray &offsets) override;
-  void GetNamespaces(ConstString name, DIEArray &offsets) override;
-  void GetFunctions(ConstString name, SymbolFileDWARF &dwarf,
-                    const CompilerDeclContext &parent_decl_ctx,
-                    uint32_t name_type_mask,
-                    std::vector<DWARFDIE> &dies) override;
-  void GetFunctions(const RegularExpression &regex,
-                    DIEArray &offsets) override;
+  void
+  GetGlobalVariables(ConstString basename,
+                     llvm::function_ref<bool(DWARFDIE die)> callback) override;
+  void
+  GetGlobalVariables(const RegularExpression &regex,
+                     llvm::function_ref<bool(DWARFDIE die)> callback) override;
+  void
+  GetGlobalVariables(DWARFUnit &cu,
+                     llvm::function_ref<bool(DWARFDIE die)> callback) override;
+  void
+  GetObjCMethods(ConstString class_name,
+                 llvm::function_ref<bool(DWARFDIE die)> callback) override {}
+  void GetCompleteObjCClass(
+      ConstString class_name, bool must_be_implementation,
+      llvm::function_ref<bool(DWARFDIE die)> callback) override;
 
-  void ReportInvalidDIERef(const DIERef &ref, llvm::StringRef name) override {}
+  /// Uses DWARF5's IDX_parent fields, when available, to speed up this query.
+  void GetFullyQualifiedType(
+      const DWARFDeclContext &context,
+      llvm::function_ref<bool(DWARFDIE die)> callback) override;
+  void GetTypes(ConstString name,
+                llvm::function_ref<bool(DWARFDIE die)> callback) override;
+  void GetTypes(const DWARFDeclContext &context,
+                llvm::function_ref<bool(DWARFDIE die)> callback) override;
+  void GetNamespaces(ConstString name,
+                     llvm::function_ref<bool(DWARFDIE die)> callback) override;
+  void GetFunctions(const Module::LookupInfo &lookup_info,
+                    SymbolFileDWARF &dwarf,
+                    const CompilerDeclContext &parent_decl_ctx,
+                    llvm::function_ref<bool(DWARFDIE die)> callback) override;
+  void GetFunctions(const RegularExpression &regex,
+                    llvm::function_ref<bool(DWARFDIE die)> callback) override;
+
   void Dump(Stream &s) override;
 
 private:
@@ -49,11 +66,12 @@ private:
                        std::unique_ptr<llvm::DWARFDebugNames> debug_names_up,
                        DWARFDataExtractor debug_names_data,
                        DWARFDataExtractor debug_str_data,
-                       DWARFDebugInfo &debug_info)
-      : DWARFIndex(module), m_debug_info(debug_info),
+                       SymbolFileDWARF &dwarf)
+      : DWARFIndex(module), m_debug_info(dwarf.DebugInfo()),
         m_debug_names_data(debug_names_data), m_debug_str_data(debug_str_data),
         m_debug_names_up(std::move(debug_names_up)),
-        m_fallback(module, &debug_info, GetUnits(*m_debug_names_up)) {}
+        m_fallback(module, dwarf, GetUnits(*m_debug_names_up),
+                   GetTypeUnitSignatures(*m_debug_names_up)) {}
 
   DWARFDebugInfo &m_debug_info;
 
@@ -66,16 +84,50 @@ private:
   std::unique_ptr<DebugNames> m_debug_names_up;
   ManualDWARFIndex m_fallback;
 
-  llvm::Optional<DIERef> ToDIERef(const DebugNames::Entry &entry);
-  void Append(const DebugNames::Entry &entry, DIEArray &offsets);
+  DWARFUnit *GetNonSkeletonUnit(const DebugNames::Entry &entry) const;
+  DWARFDIE GetDIE(const DebugNames::Entry &entry) const;
+
+  /// Checks if an entry is a foreign TU and fetch the type unit.
+  ///
+  /// This function checks if the DebugNames::Entry refers to a foreign TU and
+  /// returns an optional with a value of the \a entry is a foreign type unit
+  /// entry. A valid pointer will be returned if this entry is from a .dwo file
+  /// or if it is from a .dwp file and it matches the type unit's originating
+  /// .dwo file by verifying that the DW_TAG_type_unit DIE has a DW_AT_dwo_name
+  /// that matches the DWO name from the originating skeleton compile unit.
+  ///
+  /// \param[in] entry
+  ///   The accelerator table entry to check.
+  ///
+  /// \returns
+  ///   A std::optional that has a value if this entry represents a foreign type
+  ///   unit. If the pointer is valid, then we were able to find and match the
+  ///   entry to the type unit in the .dwo or .dwp file. The returned value can
+  ///   have a valid, yet contain NULL in the following cases:
+  ///   - we were not able to load the .dwo file (missing or DWO ID mismatch)
+  ///   - we were able to load the .dwp file, but the type units DWO name
+  ///     doesn't match the originating skeleton compile unit's entry
+  ///   Returns std::nullopt if this entry is not a foreign type unit entry.
+  std::optional<DWARFTypeUnit *>
+  GetForeignTypeUnit(const DebugNames::Entry &entry) const;
+
+  bool ProcessEntry(const DebugNames::Entry &entry,
+                    llvm::function_ref<bool(DWARFDIE die)> callback);
+
+  /// Returns true if `parent_entries` have identical names to `parent_names`.
+  bool SameParentChain(llvm::ArrayRef<llvm::StringRef> parent_names,
+                       llvm::ArrayRef<DebugNames::Entry> parent_entries) const;
 
   static void MaybeLogLookupError(llvm::Error error,
                                   const DebugNames::NameIndex &ni,
                                   llvm::StringRef name);
 
   static llvm::DenseSet<dw_offset_t> GetUnits(const DebugNames &debug_names);
+  static llvm::DenseSet<uint64_t>
+  GetTypeUnitSignatures(const DebugNames &debug_names);
 };
 
-} // namespace lldb_private
+} // namespace dwarf
+} // namespace lldb_private::plugin
 
-#endif // LLDB_DEBUGNAMESDWARFINDEX_H
+#endif // LLDB_SOURCE_PLUGINS_SYMBOLFILE_DWARF_DEBUGNAMESDWARFINDEX_H

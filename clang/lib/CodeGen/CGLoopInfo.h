@@ -29,6 +29,7 @@ class MDNode;
 namespace clang {
 class Attr;
 class ASTContext;
+class CodeGenOptions;
 namespace CodeGen {
 
 /// Attributes that may be specified on loops.
@@ -57,6 +58,9 @@ struct LoopAttributes {
   /// Value for llvm.loop.vectorize.width metadata.
   unsigned VectorizeWidth;
 
+  // Value for llvm.loop.vectorize.scalable.enable
+  LVEnableState VectorizeScalable;
+
   /// Value for llvm.loop.interleave.count metadata.
   unsigned InterleaveCount;
 
@@ -74,6 +78,12 @@ struct LoopAttributes {
 
   /// Value for llvm.loop.pipeline.iicount metadata.
   unsigned PipelineInitiationInterval;
+
+  /// Value for 'llvm.loop.align' metadata.
+  unsigned CodeAlign;
+
+  /// Value for whether the loop is required to make progress.
+  bool MustProgress;
 };
 
 /// Information used when generating a structured loop.
@@ -99,6 +109,10 @@ public:
   /// Create the loop's metadata. Must be called after its nested loops have
   /// been processed.
   void finish();
+
+  /// Returns the first outer loop containing this loop if any, nullptr
+  /// otherwise.
+  const LoopInfo *getParent() const { return Parent; }
 
 private:
   /// Loop ID metadata.
@@ -202,8 +216,9 @@ public:
   /// Begin a new structured loop. Stage attributes from the Attrs list.
   /// The staged attributes are applied to the loop and then cleared.
   void push(llvm::BasicBlock *Header, clang::ASTContext &Ctx,
+            const clang::CodeGenOptions &CGOpts,
             llvm::ArrayRef<const Attr *> Attrs, const llvm::DebugLoc &StartLoc,
-            const llvm::DebugLoc &EndLoc);
+            const llvm::DebugLoc &EndLoc, bool MustProgress = false);
 
   /// End the current loop.
   void pop();
@@ -253,6 +268,10 @@ public:
   /// Set the vectorize width for the next loop pushed.
   void setVectorizeWidth(unsigned W) { StagedAttrs.VectorizeWidth = W; }
 
+  void setVectorizeScalable(const LoopAttributes::LVEnableState &State) {
+    StagedAttrs.VectorizeScalable = State;
+  }
+
   /// Set the interleave count for the next loop pushed.
   void setInterleaveCount(unsigned C) { StagedAttrs.InterleaveCount = C; }
 
@@ -270,12 +289,19 @@ public:
     StagedAttrs.PipelineInitiationInterval = C;
   }
 
-private:
+  /// Set value of code align for the next loop pushed.
+  void setCodeAlign(unsigned C) { StagedAttrs.CodeAlign = C; }
+
+  /// Set no progress for the next loop pushed.
+  void setMustProgress(bool P) { StagedAttrs.MustProgress = P; }
+
   /// Returns true if there is LoopInfo on the stack.
   bool hasInfo() const { return !Active.empty(); }
   /// Return the LoopInfo for the current loop. HasInfo should be called
   /// first to ensure LoopInfo is present.
   const LoopInfo &getInfo() const { return *Active.back(); }
+
+private:
   /// The set of attributes that will be applied to the next pushed loop.
   LoopAttributes StagedAttrs;
   /// Stack of active loops.

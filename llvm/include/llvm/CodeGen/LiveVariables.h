@@ -35,21 +35,20 @@
 #include "llvm/ADT/SparseBitVector.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstr.h"
+#include "llvm/CodeGen/MachinePassManager.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/InitializePasses.h"
+#include "llvm/PassRegistry.h"
 
 namespace llvm {
 
 class MachineBasicBlock;
 class MachineRegisterInfo;
 
-class LiveVariables : public MachineFunctionPass {
-public:
-  static char ID; // Pass identification, replacement for typeid
-  LiveVariables() : MachineFunctionPass(ID) {
-    initializeLiveVariablesPass(*PassRegistry::getPassRegistry());
-  }
+class LiveVariables {
+  friend class LiveVariablesWrapperPass;
 
+public:
   /// VarInfo - This represents the regions where a virtual register is live in
   /// the program.  We represent this with three different pieces of
   /// information: the set of blocks in which the instruction is live
@@ -105,9 +104,10 @@ public:
     /// isLiveIn - Is Reg live in to MBB? This means that Reg is live through
     /// MBB, or it is killed in MBB. If Reg is only used by PHI instructions in
     /// MBB, it is not considered live in.
-    bool isLiveIn(const MachineBasicBlock &MBB,
-                  unsigned Reg,
+    bool isLiveIn(const MachineBasicBlock &MBB, Register Reg,
                   MachineRegisterInfo &MRI);
+
+    void print(raw_ostream &OS) const;
 
     void dump() const;
   };
@@ -118,17 +118,12 @@ private:
   ///
   IndexedMap<VarInfo, VirtReg2IndexFunctor> VirtRegInfo;
 
-  /// PHIJoins - list of virtual registers that are PHI joins. These registers
-  /// may have multiple definitions, and they require special handling when
-  /// building live intervals.
-  SparseBitVector<> PHIJoins;
-
 private:   // Intermediate data structures
-  MachineFunction *MF;
+  MachineFunction *MF = nullptr;
 
-  MachineRegisterInfo* MRI;
+  MachineRegisterInfo *MRI = nullptr;
 
-  const TargetRegisterInfo *TRI;
+  const TargetRegisterInfo *TRI = nullptr;
 
   // PhysRegInfo - Keep track of which instruction was the last def of a
   // physical register. This is a purely local property, because all physical
@@ -146,28 +141,33 @@ private:   // Intermediate data structures
   // current basic block.
   DenseMap<MachineInstr*, unsigned> DistanceMap;
 
+  // For legacy pass.
+  LiveVariables() = default;
+
+  void analyze(MachineFunction &MF);
+
   /// HandlePhysRegKill - Add kills of Reg and its sub-registers to the
   /// uses. Pay special attention to the sub-register uses which may come below
   /// the last use of the whole register.
-  bool HandlePhysRegKill(unsigned Reg, MachineInstr *MI);
+  bool HandlePhysRegKill(Register Reg, MachineInstr *MI);
 
   /// HandleRegMask - Call HandlePhysRegKill for all registers clobbered by Mask.
-  void HandleRegMask(const MachineOperand&);
+  void HandleRegMask(const MachineOperand &, unsigned);
 
-  void HandlePhysRegUse(unsigned Reg, MachineInstr &MI);
-  void HandlePhysRegDef(unsigned Reg, MachineInstr *MI,
+  void HandlePhysRegUse(Register Reg, MachineInstr &MI);
+  void HandlePhysRegDef(Register Reg, MachineInstr *MI,
                         SmallVectorImpl<unsigned> &Defs);
   void UpdatePhysRegDefs(MachineInstr &MI, SmallVectorImpl<unsigned> &Defs);
 
   /// FindLastRefOrPartRef - Return the last reference or partial reference of
   /// the specified register.
-  MachineInstr *FindLastRefOrPartRef(unsigned Reg);
+  MachineInstr *FindLastRefOrPartRef(Register Reg);
 
   /// FindLastPartialDef - Return the last partial def of the specified
   /// register. Also returns the sub-registers that're defined by the
   /// instruction.
-  MachineInstr *FindLastPartialDef(unsigned Reg,
-                                   SmallSet<unsigned,4> &PartDefRegs);
+  MachineInstr *FindLastPartialDef(Register Reg,
+                                   SmallSet<unsigned, 4> &PartDefRegs);
 
   /// analyzePHINodes - Gather information about the PHI nodes in here. In
   /// particular, we want to map the variable information of a virtual
@@ -175,30 +175,35 @@ private:   // Intermediate data structures
   /// is coming from.
   void analyzePHINodes(const MachineFunction& Fn);
 
-  void runOnInstr(MachineInstr &MI, SmallVectorImpl<unsigned> &Defs);
+  void runOnInstr(MachineInstr &MI, SmallVectorImpl<unsigned> &Defs,
+                  unsigned NumRegs);
 
   void runOnBlock(MachineBasicBlock *MBB, unsigned NumRegs);
+
 public:
+  LiveVariables(MachineFunction &MF);
 
-  bool runOnMachineFunction(MachineFunction &MF) override;
-
-  /// RegisterDefIsDead - Return true if the specified instruction defines the
-  /// specified register, but that definition is dead.
-  bool RegisterDefIsDead(MachineInstr &MI, unsigned Reg) const;
+  void print(raw_ostream &OS) const;
 
   //===--------------------------------------------------------------------===//
   //  API to update live variable information
 
+  /// Recompute liveness from scratch for a virtual register \p Reg that is
+  /// known to have a single def that dominates all uses. This can be useful
+  /// after removing some uses of \p Reg. It is not necessary for the whole
+  /// machine function to be in SSA form.
+  void recomputeForSingleDefVirtReg(Register Reg);
+
   /// replaceKillInstruction - Update register kill info by replacing a kill
   /// instruction with a new one.
-  void replaceKillInstruction(unsigned Reg, MachineInstr &OldMI,
+  void replaceKillInstruction(Register Reg, MachineInstr &OldMI,
                               MachineInstr &NewMI);
 
   /// addVirtualRegisterKilled - Add information about the fact that the
   /// specified register is killed after being used by the specified
   /// instruction. If AddIfNotFound is true, add a implicit operand if it's
   /// not found.
-  void addVirtualRegisterKilled(unsigned IncomingReg, MachineInstr &MI,
+  void addVirtualRegisterKilled(Register IncomingReg, MachineInstr &MI,
                                 bool AddIfNotFound = false) {
     if (MI.addRegisterKilled(IncomingReg, TRI, AddIfNotFound))
       getVarInfo(IncomingReg).Kills.push_back(&MI);
@@ -208,14 +213,13 @@ public:
   /// register from the live variable information. Returns true if the
   /// variable was marked as killed by the specified instruction,
   /// false otherwise.
-  bool removeVirtualRegisterKilled(unsigned reg, MachineInstr &MI) {
-    if (!getVarInfo(reg).removeKill(MI))
+  bool removeVirtualRegisterKilled(Register Reg, MachineInstr &MI) {
+    if (!getVarInfo(Reg).removeKill(MI))
       return false;
 
     bool Removed = false;
-    for (unsigned i = 0, e = MI.getNumOperands(); i != e; ++i) {
-      MachineOperand &MO = MI.getOperand(i);
-      if (MO.isReg() && MO.isKill() && MO.getReg() == reg) {
+    for (MachineOperand &MO : MI.operands()) {
+      if (MO.isReg() && MO.isKill() && MO.getReg() == Reg) {
         MO.setIsKill(false);
         Removed = true;
         break;
@@ -234,7 +238,7 @@ public:
   /// addVirtualRegisterDead - Add information about the fact that the specified
   /// register is dead after being used by the specified instruction. If
   /// AddIfNotFound is true, add a implicit operand if it's not found.
-  void addVirtualRegisterDead(unsigned IncomingReg, MachineInstr &MI,
+  void addVirtualRegisterDead(Register IncomingReg, MachineInstr &MI,
                               bool AddIfNotFound = false) {
     if (MI.addRegisterDead(IncomingReg, TRI, AddIfNotFound))
       getVarInfo(IncomingReg).Kills.push_back(&MI);
@@ -244,14 +248,13 @@ public:
   /// register from the live variable information. Returns true if the
   /// variable was marked dead at the specified instruction, false
   /// otherwise.
-  bool removeVirtualRegisterDead(unsigned reg, MachineInstr &MI) {
-    if (!getVarInfo(reg).removeKill(MI))
+  bool removeVirtualRegisterDead(Register Reg, MachineInstr &MI) {
+    if (!getVarInfo(Reg).removeKill(MI))
       return false;
 
     bool Removed = false;
-    for (unsigned i = 0, e = MI.getNumOperands(); i != e; ++i) {
-      MachineOperand &MO = MI.getOperand(i);
-      if (MO.isReg() && MO.isDef() && MO.getReg() == reg) {
+    for (MachineOperand &MO : MI.operands()) {
+      if (MO.isReg() && MO.isDef() && MO.getReg() == Reg) {
         MO.setIsDead(false);
         Removed = true;
         break;
@@ -262,32 +265,27 @@ public:
     return true;
   }
 
-  void getAnalysisUsage(AnalysisUsage &AU) const override;
-
-  void releaseMemory() override {
-    VirtRegInfo.clear();
-  }
-
   /// getVarInfo - Return the VarInfo structure for the specified VIRTUAL
   /// register.
-  VarInfo &getVarInfo(unsigned RegIdx);
+  VarInfo &getVarInfo(Register Reg);
 
   void MarkVirtRegAliveInBlock(VarInfo& VRInfo, MachineBasicBlock* DefBlock,
                                MachineBasicBlock *BB);
-  void MarkVirtRegAliveInBlock(VarInfo& VRInfo, MachineBasicBlock* DefBlock,
+  void MarkVirtRegAliveInBlock(VarInfo &VRInfo, MachineBasicBlock *DefBlock,
                                MachineBasicBlock *BB,
-                               std::vector<MachineBasicBlock*> &WorkList);
-  void HandleVirtRegDef(unsigned reg, MachineInstr &MI);
-  void HandleVirtRegUse(unsigned reg, MachineBasicBlock *MBB, MachineInstr &MI);
+                               SmallVectorImpl<MachineBasicBlock *> &WorkList);
 
-  bool isLiveIn(unsigned Reg, const MachineBasicBlock &MBB) {
+  void HandleVirtRegDef(Register reg, MachineInstr &MI);
+  void HandleVirtRegUse(Register reg, MachineBasicBlock *MBB, MachineInstr &MI);
+
+  bool isLiveIn(Register Reg, const MachineBasicBlock &MBB) {
     return getVarInfo(Reg).isLiveIn(MBB, Reg, *MRI);
   }
 
   /// isLiveOut - Determine if Reg is live out from MBB, when not considering
   /// PHI nodes. This means that Reg is either killed by a successor block or
   /// passed through one.
-  bool isLiveOut(unsigned Reg, const MachineBasicBlock &MBB);
+  bool isLiveOut(Register Reg, const MachineBasicBlock &MBB);
 
   /// addNewBlock - Add a new basic block BB between DomBB and SuccBB. All
   /// variables that are live out of DomBB and live into SuccBB will be marked
@@ -297,11 +295,52 @@ public:
                    MachineBasicBlock *DomBB,
                    MachineBasicBlock *SuccBB);
 
-  /// isPHIJoin - Return true if Reg is a phi join register.
-  bool isPHIJoin(unsigned Reg) { return PHIJoins.test(Reg); }
+  void addNewBlock(MachineBasicBlock *BB,
+                   MachineBasicBlock *DomBB,
+                   MachineBasicBlock *SuccBB,
+                   std::vector<SparseBitVector<>> &LiveInSets);
+};
 
-  /// setPHIJoin - Mark Reg as a phi join register.
-  void setPHIJoin(unsigned Reg) { PHIJoins.set(Reg); }
+class LiveVariablesAnalysis : public AnalysisInfoMixin<LiveVariablesAnalysis> {
+  friend AnalysisInfoMixin<LiveVariablesAnalysis>;
+  static AnalysisKey Key;
+
+public:
+  using Result = LiveVariables;
+  Result run(MachineFunction &MF, MachineFunctionAnalysisManager &);
+};
+
+class LiveVariablesPrinterPass
+    : public PassInfoMixin<LiveVariablesPrinterPass> {
+  raw_ostream &OS;
+
+public:
+  explicit LiveVariablesPrinterPass(raw_ostream &OS) : OS(OS) {}
+  PreservedAnalyses run(MachineFunction &MF,
+                        MachineFunctionAnalysisManager &MFAM);
+  static bool isRequired() { return true; }
+};
+
+class LiveVariablesWrapperPass : public MachineFunctionPass {
+  LiveVariables LV;
+
+public:
+  static char ID; // Pass identification, replacement for typeid
+
+  LiveVariablesWrapperPass() : MachineFunctionPass(ID) {
+    initializeLiveVariablesWrapperPassPass(*PassRegistry::getPassRegistry());
+  }
+
+  bool runOnMachineFunction(MachineFunction &MF) override {
+    LV.analyze(MF);
+    return false;
+  }
+
+  void getAnalysisUsage(AnalysisUsage &AU) const override;
+
+  void releaseMemory() override { LV.VirtRegInfo.clear(); }
+
+  LiveVariables &getLV() { return LV; }
 };
 
 } // End llvm namespace

@@ -6,10 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef liblldb_AppleObjCRuntime_h_
-#define liblldb_AppleObjCRuntime_h_
+#ifndef LLDB_SOURCE_PLUGINS_LANGUAGERUNTIME_OBJC_APPLEOBJCRUNTIME_APPLEOBJCRUNTIME_H
+#define LLDB_SOURCE_PLUGINS_LANGUAGERUNTIME_OBJC_APPLEOBJCRUNTIME_APPLEOBJCRUNTIME_H
 
-#include "llvm/ADT/Optional.h"
 
 #include "AppleObjCTrampolineHandler.h"
 #include "AppleThreadPlanStepThroughObjCTrampoline.h"
@@ -17,6 +16,7 @@
 #include "lldb/lldb-private.h"
 
 #include "Plugins/LanguageRuntime/ObjC/ObjCLanguageRuntime.h"
+#include <optional>
 
 namespace lldb_private {
 
@@ -31,6 +31,10 @@ public:
 
   static char ID;
 
+  static void Initialize();
+
+  static void Terminate();
+
   bool isA(const void *ClassID) const override {
     return ClassID == &ID || ObjCLanguageRuntime::isA(ClassID);
   }
@@ -40,10 +44,10 @@ public:
   }
 
   // These are generic runtime functions:
-  bool GetObjectDescription(Stream &str, Value &value,
-                            ExecutionContextScope *exe_scope) override;
+  llvm::Error GetObjectDescription(Stream &str, Value &value,
+                                   ExecutionContextScope *exe_scope) override;
 
-  bool GetObjectDescription(Stream &str, ValueObject &object) override;
+  llvm::Error GetObjectDescription(Stream &str, ValueObject &object) override;
 
   bool CouldHaveDynamicValue(ValueObject &in_value) override;
 
@@ -84,7 +88,7 @@ public:
   bool ExceptionBreakpointsExplainStop(lldb::StopInfoSP stop_reason) override;
 
   lldb::SearchFilterSP CreateExceptionSearchFilter() override;
-  
+
   static std::tuple<FileSpec, ConstString> GetExceptionThrowLocation();
 
   lldb::ValueObjectSP GetExceptionObjectForThread(
@@ -97,7 +101,7 @@ public:
 
   virtual void GetValuesForGlobalCFBooleans(lldb::addr_t &cf_true,
                                             lldb::addr_t &cf_false);
-                                            
+
   virtual bool IsTaggedPointer (lldb::addr_t addr) { return false; }
 
 protected:
@@ -123,9 +127,9 @@ protected:
   lldb::ModuleWP m_objc_module_wp;
   std::unique_ptr<FunctionCaller> m_print_object_caller_up;
 
-  llvm::Optional<uint32_t> m_Foundation_major;
+  std::optional<uint32_t> m_Foundation_major;
 };
 
 } // namespace lldb_private
 
-#endif // liblldb_AppleObjCRuntime_h_
+#endif // LLDB_SOURCE_PLUGINS_LANGUAGERUNTIME_OBJC_APPLEOBJCRUNTIME_APPLEOBJCRUNTIME_H

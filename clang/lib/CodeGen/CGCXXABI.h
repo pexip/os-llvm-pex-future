@@ -16,6 +16,7 @@
 
 #include "CodeGenFunction.h"
 #include "clang/Basic/LLVM.h"
+#include "clang/CodeGen/CodeGenABITypes.h"
 
 namespace llvm {
 class Constant;
@@ -30,7 +31,6 @@ class CXXConstructorDecl;
 class CXXDestructorDecl;
 class CXXMethodDecl;
 class CXXRecordDecl;
-class FieldDecl;
 class MangleContext;
 
 namespace CodeGen {
@@ -41,6 +41,8 @@ struct CatchTypeInfo;
 
 /// Implements C++ ABI-specific code generation functions.
 class CGCXXABI {
+  friend class CodeGenModule;
+
 protected:
   CodeGenModule &CGM;
   std::unique_ptr<MangleContext> MangleCtx;
@@ -55,9 +57,8 @@ protected:
   llvm::Value *getThisValue(CodeGenFunction &CGF) {
     return CGF.CXXABIThisValue;
   }
-  Address getThisAddress(CodeGenFunction &CGF) {
-    return Address(CGF.CXXABIThisValue, CGF.CXXABIThisAlignment);
-  }
+
+  Address getThisAddress(CodeGenFunction &CGF);
 
   /// Issue a diagnostic about unsupported features in the ABI.
   void ErrorUnsupportedABI(CodeGenFunction &CGF, StringRef S);
@@ -79,6 +80,18 @@ protected:
 
   ASTContext &getContext() const { return CGM.getContext(); }
 
+  bool mayNeedDestruction(const VarDecl *VD) const;
+
+  /// Determine whether we will definitely emit this variable with a constant
+  /// initializer, either because the language semantics demand it or because
+  /// we know that the initializer is a constant.
+  // For weak definitions, any initializer available in the current translation
+  // is not necessarily reflective of the initializer used; such initializers
+  // are ignored unless if InspectInitForWeakDef is true.
+  bool
+  isEmittedWithConstantInitializer(const VarDecl *VD,
+                                   bool InspectInitForWeakDef = false) const;
+
   virtual bool requiresArrayCookie(const CXXDeleteExpr *E, QualType eltType);
   virtual bool requiresArrayCookie(const CXXNewExpr *E);
 
@@ -87,6 +100,10 @@ protected:
   /// given function.  Obvious common logic like being defined on a
   /// final class will have been taken care of by the caller.
   virtual bool isThisCompleteObject(GlobalDecl GD) const = 0;
+
+  virtual bool constructorsAndDestructorsReturnThis() const {
+    return CGM.getCodeGenOpts().CtorDtorReturnThis;
+  }
 
 public:
 
@@ -103,9 +120,17 @@ public:
   ///
   /// There currently is no way to indicate if a destructor returns 'this'
   /// when called virtually, and code generation does not support the case.
-  virtual bool HasThisReturn(GlobalDecl GD) const { return false; }
+  virtual bool HasThisReturn(GlobalDecl GD) const {
+    if (isa<CXXConstructorDecl>(GD.getDecl()) ||
+        (isa<CXXDestructorDecl>(GD.getDecl()) &&
+         GD.getDtorType() != Dtor_Deleting))
+      return constructorsAndDestructorsReturnThis();
+    return false;
+  }
 
   virtual bool hasMostDerivedReturn(GlobalDecl GD) const { return false; }
+
+  virtual bool useSinitAndSterm() const { return false; }
 
   /// Returns true if the target allows calling a function through a pointer
   /// with a different signature than the actual function (or equivalently,
@@ -142,6 +167,13 @@ public:
   /// Returns true if the implicit 'sret' parameter comes after the implicit
   /// 'this' parameter of C++ instance methods.
   virtual bool isSRetParameterAfterThis() const { return false; }
+
+  /// Returns true if the ABI permits the argument to be a homogeneous
+  /// aggregate.
+  virtual bool
+  isPermittedToBeHomogeneousAggregate(const CXXRecordDecl *RD) const {
+    return true;
+  };
 
   /// Find the LLVM type used to represent the given member pointer
   /// type.
@@ -217,12 +249,6 @@ protected:
   /// is required.
   llvm::Constant *getMemberPointerAdjustment(const CastExpr *E);
 
-  /// Computes the non-virtual adjustment needed for a member pointer
-  /// conversion along an inheritance path stored in an APValue.  Unlike
-  /// getMemberPointerAdjustment(), the adjustment can be negative if the path
-  /// is from a derived type to a base type.
-  CharUnits getMemberPointerPathAdjustment(const APValue &MP);
-
 public:
   virtual void emitVirtualObjectDelete(CodeGenFunction &CGF,
                                        const CXXDeleteExpr *DE,
@@ -248,8 +274,7 @@ public:
   getAddrOfCXXCatchHandlerType(QualType Ty, QualType CatchHandlerType) = 0;
   virtual CatchTypeInfo getCatchAllTypeInfo();
 
-  virtual bool shouldTypeidBeNullChecked(bool IsDeref,
-                                         QualType SrcRecordTy) = 0;
+  virtual bool shouldTypeidBeNullChecked(QualType SrcRecordTy) = 0;
   virtual void EmitBadTypeidCall(CodeGenFunction &CGF) = 0;
   virtual llvm::Value *EmitTypeid(CodeGenFunction &CGF, QualType SrcRecordTy,
                                   Address ThisPtr,
@@ -257,16 +282,26 @@ public:
 
   virtual bool shouldDynamicCastCallBeNullChecked(bool SrcIsPtr,
                                                   QualType SrcRecordTy) = 0;
+  virtual bool shouldEmitExactDynamicCast(QualType DestRecordTy) = 0;
 
-  virtual llvm::Value *
-  EmitDynamicCastCall(CodeGenFunction &CGF, Address Value,
-                      QualType SrcRecordTy, QualType DestTy,
-                      QualType DestRecordTy, llvm::BasicBlock *CastEnd) = 0;
+  virtual llvm::Value *emitDynamicCastCall(CodeGenFunction &CGF, Address Value,
+                                           QualType SrcRecordTy,
+                                           QualType DestTy,
+                                           QualType DestRecordTy,
+                                           llvm::BasicBlock *CastEnd) = 0;
 
-  virtual llvm::Value *EmitDynamicCastToVoid(CodeGenFunction &CGF,
+  virtual llvm::Value *emitDynamicCastToVoid(CodeGenFunction &CGF,
                                              Address Value,
-                                             QualType SrcRecordTy,
-                                             QualType DestTy) = 0;
+                                             QualType SrcRecordTy) = 0;
+
+  /// Emit a dynamic_cast from SrcRecordTy to DestRecordTy. The cast fails if
+  /// the dynamic type of Value is not exactly DestRecordTy.
+  virtual llvm::Value *emitExactDynamicCast(CodeGenFunction &CGF, Address Value,
+                                            QualType SrcRecordTy,
+                                            QualType DestTy,
+                                            QualType DestRecordTy,
+                                            llvm::BasicBlock *CastSuccess,
+                                            llvm::BasicBlock *CastFail) = 0;
 
   virtual bool EmitBadCastCall(CodeGenFunction &CGF) = 0;
 
@@ -287,24 +322,44 @@ public:
   /// Emit constructor variants required by this ABI.
   virtual void EmitCXXConstructors(const CXXConstructorDecl *D) = 0;
 
-  /// Notes how many arguments were added to the beginning (Prefix) and ending
-  /// (Suffix) of an arg list.
+  /// Additional implicit arguments to add to the beginning (Prefix) and end
+  /// (Suffix) of a constructor / destructor arg list.
   ///
-  /// Note that Prefix actually refers to the number of args *after* the first
-  /// one: `this` arguments always come first.
+  /// Note that Prefix should actually be inserted *after* the first existing
+  /// arg; `this` arguments always come first.
   struct AddedStructorArgs {
+    struct Arg {
+      llvm::Value *Value;
+      QualType Type;
+    };
+    SmallVector<Arg, 1> Prefix;
+    SmallVector<Arg, 1> Suffix;
+    AddedStructorArgs() = default;
+    AddedStructorArgs(SmallVector<Arg, 1> P, SmallVector<Arg, 1> S)
+        : Prefix(std::move(P)), Suffix(std::move(S)) {}
+    static AddedStructorArgs prefix(SmallVector<Arg, 1> Args) {
+      return {std::move(Args), {}};
+    }
+    static AddedStructorArgs suffix(SmallVector<Arg, 1> Args) {
+      return {{}, std::move(Args)};
+    }
+  };
+
+  /// Similar to AddedStructorArgs, but only notes the number of additional
+  /// arguments.
+  struct AddedStructorArgCounts {
     unsigned Prefix = 0;
     unsigned Suffix = 0;
-    AddedStructorArgs() = default;
-    AddedStructorArgs(unsigned P, unsigned S) : Prefix(P), Suffix(S) {}
-    static AddedStructorArgs prefix(unsigned N) { return {N, 0}; }
-    static AddedStructorArgs suffix(unsigned N) { return {0, N}; }
+    AddedStructorArgCounts() = default;
+    AddedStructorArgCounts(unsigned P, unsigned S) : Prefix(P), Suffix(S) {}
+    static AddedStructorArgCounts prefix(unsigned N) { return {N, 0}; }
+    static AddedStructorArgCounts suffix(unsigned N) { return {0, N}; }
   };
 
   /// Build the signature of the given constructor or destructor variant by
   /// adding any required parameters.  For convenience, ArgTys has been
   /// initialized with the type of 'this'.
-  virtual AddedStructorArgs
+  virtual AddedStructorArgCounts
   buildStructorSignature(GlobalDecl GD,
                          SmallVectorImpl<CanQualType> &ArgTys) = 0;
 
@@ -329,9 +384,8 @@ public:
   /// zero if no specific type is applicable, e.g. if the ABI expects the "this"
   /// parameter to point to some artificial offset in a complete object due to
   /// vbases being reordered.
-  virtual const CXXRecordDecl *
-  getThisArgumentTypeForMethod(const CXXMethodDecl *MD) {
-    return MD->getParent();
+  virtual const CXXRecordDecl *getThisArgumentTypeForMethod(GlobalDecl GD) {
+    return cast<CXXMethodDecl>(GD.getDecl())->getParent();
   }
 
   /// Perform ABI-specific "this" argument adjustment required prior to
@@ -365,14 +419,26 @@ public:
   /// Emit the ABI-specific prolog for the function.
   virtual void EmitInstanceFunctionProlog(CodeGenFunction &CGF) = 0;
 
+  virtual AddedStructorArgs
+  getImplicitConstructorArgs(CodeGenFunction &CGF, const CXXConstructorDecl *D,
+                             CXXCtorType Type, bool ForVirtualBase,
+                             bool Delegating) = 0;
+
   /// Add any ABI-specific implicit arguments needed to call a constructor.
   ///
   /// \return The number of arguments added at the beginning and end of the
   /// call, which is typically zero or one.
-  virtual AddedStructorArgs
+  AddedStructorArgCounts
   addImplicitConstructorArgs(CodeGenFunction &CGF, const CXXConstructorDecl *D,
                              CXXCtorType Type, bool ForVirtualBase,
-                             bool Delegating, CallArgList &Args) = 0;
+                             bool Delegating, CallArgList &Args);
+
+  /// Get the implicit (second) parameter that comes after the "this" pointer,
+  /// or nullptr if there is isn't one.
+  virtual llvm::Value *
+  getCXXDestructorImplicitParam(CodeGenFunction &CGF,
+                                const CXXDestructorDecl *DD, CXXDtorType Type,
+                                bool ForVirtualBase, bool Delegating) = 0;
 
   /// Emit the destructor call.
   virtual void EmitDestructorCall(CodeGenFunction &CGF,
@@ -403,12 +469,6 @@ public:
   getVTableAddressPointInStructor(CodeGenFunction &CGF, const CXXRecordDecl *RD,
                                   BaseSubobject Base,
                                   const CXXRecordDecl *NearestVBase) = 0;
-
-  /// Get the address point of the vtable for the given base subobject while
-  /// building a constexpr.
-  virtual llvm::Constant *
-  getVTableAddressPointForConstExpr(BaseSubobject Base,
-                                    const CXXRecordDecl *VTableClass) = 0;
 
   /// Get the address of the vtable for the given record decl which should be
   /// used for the vptr at the given offset in RD.
@@ -444,13 +504,15 @@ public:
   virtual void setThunkLinkage(llvm::Function *Thunk, bool ForVTable,
                                GlobalDecl GD, bool ReturnAdjustment) = 0;
 
-  virtual llvm::Value *performThisAdjustment(CodeGenFunction &CGF,
-                                             Address This,
-                                             const ThisAdjustment &TA) = 0;
+  virtual llvm::Value *
+  performThisAdjustment(CodeGenFunction &CGF, Address This,
+                        const CXXRecordDecl *UnadjustedClass,
+                        const ThunkInfo &TI) = 0;
 
-  virtual llvm::Value *performReturnAdjustment(CodeGenFunction &CGF,
-                                               Address Ret,
-                                               const ReturnAdjustment &RA) = 0;
+  virtual llvm::Value *
+  performReturnAdjustment(CodeGenFunction &CGF, Address Ret,
+                          const CXXRecordDecl *UnadjustedClass,
+                          const ReturnAdjustment &RA) = 0;
 
   virtual void EmitReturnFromThunk(CodeGenFunction &CGF,
                                    RValue RV, QualType ResultType);

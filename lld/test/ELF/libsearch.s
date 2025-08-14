@@ -20,13 +20,13 @@
 // Should link normally, because _bar is not used
 // RUN: ld.lld -o %t3 %t.o
 // Should not link because of undefined symbol _bar
-// RUN: not ld.lld -o %t3 %t.o %tbar.o 2>&1 \
+// RUN: not ld.lld -o /dev/null %t.o %tbar.o 2>&1 \
 // RUN:   | FileCheck --check-prefix=UNDEFINED %s
 // UNDEFINED: error: undefined symbol: _bar
 // UNDEFINED: >>> referenced by {{.*}}:(.bar+0x0)
 
 // Should fail if cannot find specified library (without -L switch)
-// RUN: not ld.lld -o %t3 %t.o -lls 2>&1 \
+// RUN: not ld.lld -o /dev/null %t.o -lls 2>&1 \
 // RUN:   | FileCheck --check-prefix=NOLIB %s
 // NOLIB: unable to find library -lls
 
@@ -65,7 +65,7 @@
 // Should not search for dynamic libraries if -Bstatic is specified
 // RUN: ld.lld -o %t3 %t.o -L%t.dir -Bstatic -lls
 // RUN: llvm-readobj --symbols %t3 | FileCheck --check-prefix=STATIC %s
-// RUN: not ld.lld -o %t3 %t.o -L%t.dir -Bstatic -lls2 2>&1 \
+// RUN: not ld.lld -o /dev/null %t.o -L%t.dir -Bstatic -lls2 2>&1 \
 // RUN:   | FileCheck --check-prefix=NOLIB2 %s
 // NOLIB2: unable to find library -lls2
 
@@ -91,10 +91,16 @@
 // RUN: ld.lld -o %t3 %t.o -L%t.dir -Bstatic -call_shared -lls
 // RUN: llvm-readobj --symbols %t3 | FileCheck --check-prefix=DYNAMIC %s
 
+/// -r implies -Bstatic and has precedence over -Bdynamic.
+// RUN: ld.lld -r -Bdynamic %t.o -L%t.dir -lls -o %t3.ro
+// RUN: llvm-readelf -s -h %t3.ro | FileCheck --check-prefix=RELOCATABLE %s
+// RELOCATABLE: Type: REL
+// RELOCATABLE: [[#]] _static
+
 // -nostdlib
 // RUN: echo 'SEARCH_DIR("'%t.dir'")' > %t.script
 // RUN: ld.lld -o %t3 %t.o -script %t.script -lls
-// RUN: not ld.lld -o %t3 %t.o -script %t.script -lls -nostdlib \
+// RUN: not ld.lld -o /dev/null %t.o -script %t.script -lls -nostdlib \
 // RUN:   2>&1 | FileCheck --check-prefix=NOSTDLIB %s
 // NOSTDLIB: unable to find library -lls
 

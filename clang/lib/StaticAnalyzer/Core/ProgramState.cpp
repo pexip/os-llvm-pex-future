@@ -16,9 +16,10 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/AnalysisManager.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/DynamicType.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/ExprEngine.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramStateTrait.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/SubEngine.h"
 #include "llvm/Support/raw_ostream.h"
+#include <optional>
 
 using namespace clang;
 using namespace ento;
@@ -54,12 +55,8 @@ ProgramState::ProgramState(ProgramStateManager *mgr, const Environment& env,
 }
 
 ProgramState::ProgramState(const ProgramState &RHS)
-    : llvm::FoldingSetNode(),
-      stateMgr(RHS.stateMgr),
-      Env(RHS.Env),
-      store(RHS.store),
-      GDM(RHS.GDM),
-      refCount(0) {
+    : stateMgr(RHS.stateMgr), Env(RHS.Env), store(RHS.store), GDM(RHS.GDM),
+      PosteriorlyOverconstrained(RHS.PosteriorlyOverconstrained), refCount(0) {
   stateMgr->getStoreManager().incrementReferenceCount(store);
 }
 
@@ -76,12 +73,12 @@ ProgramStateManager::ProgramStateManager(ASTContext &Ctx,
                                          StoreManagerCreator CreateSMgr,
                                          ConstraintManagerCreator CreateCMgr,
                                          llvm::BumpPtrAllocator &alloc,
-                                         SubEngine *SubEng)
-  : Eng(SubEng), EnvMgr(alloc), GDMFactory(alloc),
+                                         ExprEngine *ExprEng)
+  : Eng(ExprEng), EnvMgr(alloc), GDMFactory(alloc),
     svalBuilder(createSimpleSValBuilder(alloc, Ctx, *this)),
     CallEventMgr(new CallEventManager(alloc)), Alloc(alloc) {
   StoreMgr = (*CreateSMgr)(*this);
-  ConstraintMgr = (*CreateCMgr)(*this, SubEng);
+  ConstraintMgr = (*CreateCMgr)(*this, ExprEng);
 }
 
 
@@ -159,9 +156,8 @@ ProgramState::invalidateRegions(RegionList Regions,
                              const CallEvent *Call,
                              RegionAndSymbolInvalidationTraits *ITraits) const {
   SmallVector<SVal, 8> Values;
-  for (RegionList::const_iterator I = Regions.begin(),
-                                  End = Regions.end(); I != End; ++I)
-    Values.push_back(loc::MemRegionVal(*I));
+  for (const MemRegion *Reg : Regions)
+    Values.push_back(loc::MemRegionVal(Reg));
 
   return invalidateRegionsImpl(Values, E, Count, LCtx, CausedByPointerEscape,
                                IS, ITraits, Call);
@@ -189,7 +185,7 @@ ProgramState::invalidateRegionsImpl(ValueList Values,
                                     RegionAndSymbolInvalidationTraits *ITraits,
                                     const CallEvent *Call) const {
   ProgramStateManager &Mgr = getStateManager();
-  SubEngine &Eng = Mgr.getOwningEngine();
+  ExprEngine &Eng = Mgr.getOwningEngine();
 
   InvalidatedSymbols InvalidatedSyms;
   if (!IS)
@@ -220,8 +216,6 @@ ProgramState::invalidateRegionsImpl(ValueList Values,
 }
 
 ProgramStateRef ProgramState::killBinding(Loc LV) const {
-  assert(!LV.getAs<loc::MemRegionVal>() && "Use invalidateRegion instead.");
-
   Store OldStore = getStore();
   const StoreRef &newStore =
     getStateManager().StoreMgr->killBinding(OldStore, LV);
@@ -232,12 +226,33 @@ ProgramStateRef ProgramState::killBinding(Loc LV) const {
   return makeWithStore(newStore);
 }
 
+/// SymbolicRegions are expected to be wrapped by an ElementRegion as a
+/// canonical representation. As a canonical representation, SymbolicRegions
+/// should be wrapped by ElementRegions before getting a FieldRegion.
+/// See f8643a9b31c4029942f67d4534c9139b45173504 why.
+SVal ProgramState::wrapSymbolicRegion(SVal Val) const {
+  const auto *BaseReg = dyn_cast_or_null<SymbolicRegion>(Val.getAsRegion());
+  if (!BaseReg)
+    return Val;
+
+  StoreManager &SM = getStateManager().getStoreManager();
+  QualType ElemTy = BaseReg->getPointeeStaticType();
+  return loc::MemRegionVal{SM.GetElementZeroRegion(BaseReg, ElemTy)};
+}
+
 ProgramStateRef
 ProgramState::enterStackFrame(const CallEvent &Call,
                               const StackFrameContext *CalleeCtx) const {
   const StoreRef &NewStore =
     getStateManager().StoreMgr->enterStackFrame(getStore(), Call, CalleeCtx);
   return makeWithStore(NewStore);
+}
+
+SVal ProgramState::getSelfSVal(const LocationContext *LCtx) const {
+  const ImplicitParamDecl *SelfDecl = LCtx->getSelfDecl();
+  if (!SelfDecl)
+    return SVal();
+  return getSVal(getRegion(SelfDecl, LCtx));
 }
 
 SVal ProgramState::getSValAsScalarOrLoc(const MemRegion *R) const {
@@ -311,12 +326,12 @@ ProgramStateRef ProgramState::BindExpr(const Stmt *S,
   return getStateManager().getPersistentState(NewSt);
 }
 
-ProgramStateRef ProgramState::assumeInBound(DefinedOrUnknownSVal Idx,
-                                      DefinedOrUnknownSVal UpperBound,
-                                      bool Assumption,
-                                      QualType indexTy) const {
+[[nodiscard]] std::pair<ProgramStateRef, ProgramStateRef>
+ProgramState::assumeInBoundDual(DefinedOrUnknownSVal Idx,
+                                DefinedOrUnknownSVal UpperBound,
+                                QualType indexTy) const {
   if (Idx.isUnknown() || UpperBound.isUnknown())
-    return this;
+    return {this, this};
 
   // Build an expression for 0 <= Idx < UpperBound.
   // This is the same as Idx + MIN < UpperBound + MIN, if overflow is allowed.
@@ -335,7 +350,7 @@ ProgramStateRef ProgramState::assumeInBound(DefinedOrUnknownSVal Idx,
   SVal newIdx = svalBuilder.evalBinOpNN(this, BO_Add,
                                         Idx.castAs<NonLoc>(), Min, indexTy);
   if (newIdx.isUnknownOrUndef())
-    return this;
+    return {this, this};
 
   // Adjust the upper bound.
   SVal newBound =
@@ -343,17 +358,26 @@ ProgramStateRef ProgramState::assumeInBound(DefinedOrUnknownSVal Idx,
                             Min, indexTy);
 
   if (newBound.isUnknownOrUndef())
-    return this;
+    return {this, this};
 
   // Build the actual comparison.
   SVal inBound = svalBuilder.evalBinOpNN(this, BO_LT, newIdx.castAs<NonLoc>(),
                                          newBound.castAs<NonLoc>(), Ctx.IntTy);
   if (inBound.isUnknownOrUndef())
-    return this;
+    return {this, this};
 
   // Finally, let the constraint manager take care of it.
   ConstraintManager &CM = SM.getConstraintManager();
-  return CM.assume(this, inBound.castAs<DefinedSVal>(), Assumption);
+  return CM.assumeDual(this, inBound.castAs<DefinedSVal>());
+}
+
+ProgramStateRef ProgramState::assumeInBound(DefinedOrUnknownSVal Idx,
+                                            DefinedOrUnknownSVal UpperBound,
+                                            bool Assumption,
+                                            QualType indexTy) const {
+  std::pair<ProgramStateRef, ProgramStateRef> R =
+      assumeInBoundDual(Idx, UpperBound, indexTy);
+  return Assumption ? R.first : R.second;
 }
 
 ConditionTruthVal ProgramState::isNonNull(SVal V) const {
@@ -413,7 +437,7 @@ ProgramStateRef ProgramStateManager::getPersistentState(ProgramState &State) {
     freeStates.pop_back();
   }
   else {
-    newState = (ProgramState*) Alloc.Allocate<ProgramState>();
+    newState = Alloc.Allocate<ProgramState>();
   }
   new (newState) ProgramState(State);
   StateSet.InsertNode(newState, InsertPos);
@@ -426,6 +450,12 @@ ProgramStateRef ProgramState::makeWithStore(const StoreRef &store) const {
   return getStateManager().getPersistentState(NewSt);
 }
 
+ProgramStateRef ProgramState::cloneAsPosteriorlyOverconstrained() const {
+  ProgramState NewSt(*this);
+  NewSt.PosteriorlyOverconstrained = true;
+  return getStateManager().getPersistentState(NewSt);
+}
+
 void ProgramState::setStore(const StoreRef &newStore) {
   Store newStoreStore = newStore.getStore();
   if (newStoreStore)
@@ -433,6 +463,24 @@ void ProgramState::setStore(const StoreRef &newStore) {
   if (store)
     stateMgr->getStoreManager().decrementReferenceCount(store);
   store = newStoreStore;
+}
+
+SVal ProgramState::getLValue(const FieldDecl *D, SVal Base) const {
+  Base = wrapSymbolicRegion(Base);
+  return getStateManager().StoreMgr->getLValueField(D, Base);
+}
+
+SVal ProgramState::getLValue(const IndirectFieldDecl *D, SVal Base) const {
+  StoreManager &SM = *getStateManager().StoreMgr;
+  Base = wrapSymbolicRegion(Base);
+
+  // FIXME: This should work with `SM.getLValueField(D->getAnonField(), Base)`,
+  // but that would break some tests. There is probably a bug somewhere that it
+  // would expose.
+  for (const auto *I : D->chain()) {
+    Base = SM.getLValueField(cast<FieldDecl>(I), Base);
+  }
+  return Base;
 }
 
 //===----------------------------------------------------------------------===//
@@ -539,22 +587,20 @@ bool ScanReachableSymbols::scan(nonloc::LazyCompoundVal val) {
 }
 
 bool ScanReachableSymbols::scan(nonloc::CompoundVal val) {
-  for (nonloc::CompoundVal::iterator I=val.begin(), E=val.end(); I!=E; ++I)
-    if (!scan(*I))
+  for (SVal V : val)
+    if (!scan(V))
       return false;
 
   return true;
 }
 
 bool ScanReachableSymbols::scan(const SymExpr *sym) {
-  for (SymExpr::symbol_iterator SI = sym->symbol_begin(),
-                                SE = sym->symbol_end();
-       SI != SE; ++SI) {
-    bool wasVisited = !visited.insert(*SI).second;
+  for (SymbolRef SubSym : sym->symbols()) {
+    bool wasVisited = !visited.insert(SubSym).second;
     if (wasVisited)
       continue;
 
-    if (!visitor.VisitSymbol(*SI))
+    if (!visitor.VisitSymbol(SubSym))
       return false;
   }
 
@@ -562,23 +608,20 @@ bool ScanReachableSymbols::scan(const SymExpr *sym) {
 }
 
 bool ScanReachableSymbols::scan(SVal val) {
-  if (Optional<loc::MemRegionVal> X = val.getAs<loc::MemRegionVal>())
+  if (std::optional<loc::MemRegionVal> X = val.getAs<loc::MemRegionVal>())
     return scan(X->getRegion());
 
-  if (Optional<nonloc::LazyCompoundVal> X =
+  if (std::optional<nonloc::LazyCompoundVal> X =
           val.getAs<nonloc::LazyCompoundVal>())
     return scan(*X);
 
-  if (Optional<nonloc::LocAsInteger> X = val.getAs<nonloc::LocAsInteger>())
+  if (std::optional<nonloc::LocAsInteger> X = val.getAs<nonloc::LocAsInteger>())
     return scan(X->getLoc());
 
   if (SymbolRef Sym = val.getAsSymbol())
     return scan(Sym);
 
-  if (const SymExpr *Sym = val.getAsSymbolicExpression())
-    return scan(Sym);
-
-  if (Optional<nonloc::CompoundVal> X = val.getAs<nonloc::CompoundVal>())
+  if (std::optional<nonloc::CompoundVal> X = val.getAs<nonloc::CompoundVal>())
     return scan(*X);
 
   return true;
@@ -616,10 +659,8 @@ bool ScanReachableSymbols::scan(const MemRegion *R) {
 
   // Regions captured by a block are also implicitly reachable.
   if (const BlockDataRegion *BDR = dyn_cast<BlockDataRegion>(R)) {
-    BlockDataRegion::referenced_vars_iterator I = BDR->referenced_vars_begin(),
-                                              E = BDR->referenced_vars_end();
-    for ( ; I != E; ++I) {
-      if (!scan(I.getCapturedRegion()))
+    for (auto Var : BDR->referenced_vars()) {
+      if (!scan(Var.getCapturedRegion()))
         return false;
     }
   }

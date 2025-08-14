@@ -1,5 +1,4 @@
 set(LLVM_LINK_COMPONENTS
-  AllTargetsAsmPrinters
   AllTargetsAsmParsers
   AllTargetsDescs
   AllTargetsDisassemblers
@@ -9,6 +8,7 @@ set(LLVM_LINK_COMPONENTS
   Object
   Support
   Symbolize
+  TargetParser
   )
 
 add_llvm_unittest(CFIVerifyTests

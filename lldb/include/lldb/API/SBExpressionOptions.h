@@ -6,10 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLDB_SBExpressionOptions_h_
-#define LLDB_SBExpressionOptions_h_
+#ifndef LLDB_API_SBEXPRESSIONOPTIONS_H
+#define LLDB_API_SBEXPRESSIONOPTIONS_H
 
 #include "lldb/API/SBDefines.h"
+#include "lldb/API/SBLanguages.h"
 
 #include <vector>
 
@@ -67,8 +68,14 @@ public:
   void SetTrapExceptions(bool trap_exceptions = true);
 
   void SetLanguage(lldb::LanguageType language);
+  /// Set the language using a pair of language code and version as
+  /// defined by the DWARF 6 specification.
+  /// WARNING: These codes may change until DWARF 6 is finalized.
+  void SetLanguage(lldb::SBSourceLanguageName name, uint32_t version);
 
+#ifndef SWIG
   void SetCancelCallback(lldb::ExpressionCancelCallback callback, void *baton);
+#endif
 
   bool GetGenerateDebugInfo();
 
@@ -85,6 +92,10 @@ public:
   void SetAutoApplyFixIts(bool b = true);
 
   bool GetAutoApplyFixIts();
+
+  void SetRetriesWithFixIts(uint64_t retries);
+
+  uint64_t GetRetriesWithFixIts();
 
   bool GetTopLevel();
 
@@ -112,4 +123,4 @@ private:
 
 } // namespace lldb
 
-#endif // LLDB_SBExpressionOptions_h_
+#endif // LLDB_API_SBEXPRESSIONOPTIONS_H

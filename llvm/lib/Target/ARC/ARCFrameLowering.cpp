@@ -74,8 +74,7 @@ static void generateStackAdjustment(MachineBasicBlock &MBB,
       .addImm(AbsAmount);
 }
 
-static unsigned
-determineLastCalleeSave(const std::vector<CalleeSavedInfo> &CSI) {
+static unsigned determineLastCalleeSave(ArrayRef<CalleeSavedInfo> CSI) {
   unsigned Last = 0;
   for (auto Reg : CSI) {
     assert(Reg.getReg() >= ARC::R13 && Reg.getReg() <= ARC::R25 &&
@@ -117,8 +116,7 @@ void ARCFrameLowering::emitPrologue(MachineFunction &MF,
                                     MachineBasicBlock &MBB) const {
   LLVM_DEBUG(dbgs() << "Emit Prologue: " << MF.getName() << "\n");
   auto *AFI = MF.getInfo<ARCFunctionInfo>();
-  MachineModuleInfo &MMI = MF.getMMI();
-  MCContext &Context = MMI.getContext();
+  MCContext &Context = MF.getContext();
   const MCRegisterInfo *MRI = Context.getRegisterInfo();
   const ARCInstrInfo *TII = MF.getSubtarget<ARCSubtarget>().getInstrInfo();
   MachineBasicBlock::iterator MBBI = MBB.begin();
@@ -197,7 +195,7 @@ void ARCFrameLowering::emitPrologue(MachineFunction &MF,
   // .cfi_offset fp, -StackSize
   // .cfi_offset blink, -StackSize+4
   unsigned CFIIndex = MF.addFrameInst(
-      MCCFIInstruction::createDefCfaOffset(nullptr, -MFI.getStackSize()));
+      MCCFIInstruction::cfiDefCfaOffset(nullptr, MFI.getStackSize()));
   BuildMI(MBB, MBBI, dl, TII->get(TargetOpcode::CFI_INSTRUCTION))
       .addCFIIndex(CFIIndex)
       .setMIFlags(MachineInstr::FrameSetup);
@@ -401,8 +399,7 @@ bool ARCFrameLowering::assignCalleeSavedSpillSlots(
 
 bool ARCFrameLowering::spillCalleeSavedRegisters(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
-    const std::vector<CalleeSavedInfo> &CSI,
-    const TargetRegisterInfo *TRI) const {
+    ArrayRef<CalleeSavedInfo> CSI, const TargetRegisterInfo *TRI) const {
   LLVM_DEBUG(dbgs() << "Spill callee saved registers: "
                     << MBB.getParent()->getName() << "\n");
   // There are routines for saving at least 3 registers (r13 to r15, etc.)
@@ -419,7 +416,7 @@ bool ARCFrameLowering::spillCalleeSavedRegisters(
 
 bool ARCFrameLowering::restoreCalleeSavedRegisters(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
-    std::vector<CalleeSavedInfo> &CSI, const TargetRegisterInfo *TRI) const {
+    MutableArrayRef<CalleeSavedInfo> CSI, const TargetRegisterInfo *TRI) const {
   LLVM_DEBUG(dbgs() << "Restore callee saved registers: "
                     << MBB.getParent()->getName() << "\n");
   // There are routines for saving at least 3 registers (r13 to r15, etc.)
@@ -441,8 +438,8 @@ void ARCFrameLowering::processFunctionBeforeFrameFinalized(
   LLVM_DEBUG(dbgs() << "Current stack size: " << MFI.getStackSize() << "\n");
   const TargetRegisterClass *RC = &ARC::GPR32RegClass;
   if (MFI.hasStackObjects()) {
-    int RegScavFI = MFI.CreateStackObject(
-        RegInfo->getSpillSize(*RC), RegInfo->getSpillAlignment(*RC), false);
+    int RegScavFI = MFI.CreateStackObject(RegInfo->getSpillSize(*RC),
+                                          RegInfo->getSpillAlign(*RC), false);
     RS->addScavengingFrameIndex(RegScavFI);
     LLVM_DEBUG(dbgs() << "Created scavenging index RegScavFI=" << RegScavFI
                       << "\n");
@@ -495,6 +492,6 @@ bool ARCFrameLowering::hasFP(const MachineFunction &MF) const {
   bool HasFP = MF.getTarget().Options.DisableFramePointerElim(MF) ||
                MF.getFrameInfo().hasVarSizedObjects() ||
                MF.getFrameInfo().isFrameAddressTaken() ||
-               RegInfo->needsStackRealignment(MF);
+               RegInfo->hasStackRealignment(MF);
   return HasFP;
 }

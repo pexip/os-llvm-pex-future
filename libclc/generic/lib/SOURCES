@@ -48,7 +48,6 @@ cl_khr_int64_extended_atomics/atom_max.cl
 cl_khr_int64_extended_atomics/atom_min.cl
 cl_khr_int64_extended_atomics/atom_or.cl
 cl_khr_int64_extended_atomics/atom_xor.cl
-convert.cl
 common/degrees.cl
 common/mix.cl
 common/radians.cl
@@ -176,6 +175,7 @@ math/rint.cl
 math/clc_rootn.cl
 math/rootn.cl
 math/round.cl
+math/rsqrt.cl
 math/sin.cl
 math/sincos.cl
 math/sincos_helpers.cl

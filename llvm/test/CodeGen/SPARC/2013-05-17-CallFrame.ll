@@ -12,7 +12,7 @@ define void @variable_alloca_with_adj_call_stack(i32 %num) {
 ; V8-NEXT:    save %sp, -96, %sp
 ; V8-NEXT:    .cfi_def_cfa_register %fp
 ; V8-NEXT:    .cfi_window_save
-; V8-NEXT:    .cfi_register 15, 31
+; V8-NEXT:    .cfi_register %o7, %i7
 ; V8-NEXT:    add %i0, 7, %i0
 ; V8-NEXT:    and %i0, -8, %i0
 ; V8-NEXT:    sub %sp, %i0, %i0
@@ -39,7 +39,7 @@ define void @variable_alloca_with_adj_call_stack(i32 %num) {
 ; SPARC64-NEXT:    save %sp, -128, %sp
 ; SPARC64-NEXT:    .cfi_def_cfa_register %fp
 ; SPARC64-NEXT:    .cfi_window_save
-; SPARC64-NEXT:    .cfi_register 15, 31
+; SPARC64-NEXT:    .cfi_register %o7, %i7
 ; SPARC64-NEXT:    srl %i0, 0, %i0
 ; SPARC64-NEXT:    add %i0, 15, %i0
 ; SPARC64-NEXT:    sethi 4194303, %i1
@@ -68,8 +68,8 @@ define void @variable_alloca_with_adj_call_stack(i32 %num) {
 ; SPARC64-NEXT:    restore
 entry:
   %0 = alloca i8, i32 %num, align 8
-  call void @foo(i8* %0, i8* %0, i8* %0, i8* %0, i8* %0, i8* %0, i8* %0, i8* %0, i8* %0, i8* %0)
+  call void @foo(ptr %0, ptr %0, ptr %0, ptr %0, ptr %0, ptr %0, ptr %0, ptr %0, ptr %0, ptr %0)
   ret void
 }
 
-declare void @foo(i8*, i8*, i8*, i8*, i8*, i8*, i8*, i8*, i8*, i8*);
+declare void @foo(ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr);

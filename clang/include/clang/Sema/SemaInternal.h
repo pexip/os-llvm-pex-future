@@ -21,10 +21,6 @@
 
 namespace clang {
 
-inline PartialDiagnostic Sema::PDiag(unsigned DiagID) {
-  return PartialDiagnostic(DiagID, Context.getDiagAllocator());
-}
-
 inline bool
 FTIHasSingleVoidParameter(const DeclaratorChunk::FunctionTypeInfo &FTI) {
   return FTI.NumParams == 1 && !FTI.isVariadic &&
@@ -167,6 +163,11 @@ public:
     CurrentTCIndex = Current;
     return TC;
   }
+
+  /// In the case of deeply invalid expressions, `getNextCorrection()` will
+  /// never be called since the transform never makes progress. If we don't
+  /// detect this we risk trying to correct typos forever.
+  bool hasMadeAnyCorrectionProgress() const { return CurrentTCIndex != 0; }
 
   /// Reset the consumer's position in the stream of viable corrections
   /// (i.e. getNextCorrection() will return each of the previously returned

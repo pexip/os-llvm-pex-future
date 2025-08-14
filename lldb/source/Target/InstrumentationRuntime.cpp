@@ -1,4 +1,4 @@
-//===-- InstrumentationRuntime.cpp ------------------------------*- C++ -*-===//
+//===-- InstrumentationRuntime.cpp ----------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -60,6 +60,8 @@ void InstrumentationRuntime::ModulesDidLoad(
       if (CheckIfRuntimeIsValid(module_sp)) {
         SetRuntimeModuleSP(module_sp);
         Activate();
+        if (!IsActive())
+          SetRuntimeModuleSP({}); // Don't cache module if activation failed.
         return false; // Stop iterating, we're done.
       }
     }

@@ -52,8 +52,6 @@
 // Include legacy support for instruction itineraries.
 include "llvm/Target/TargetItinerary.td"
 
-class Instruction; // Forward def
-
 class Predicate; // Forward def
 
 // DAG operator that interprets the DAG args as Instruction defs.
@@ -87,7 +85,7 @@ class SchedMachineModel {
   // Per-cycle resources tables.
   ProcessorItineraries Itineraries = NoItineraries;
 
-  bit PostRAScheduler = 0; // Enable Post RegAlloc Scheduler pass.
+  bit PostRAScheduler = false; // Enable Post RegAlloc Scheduler pass.
 
   // Subtargets that define a model for only a subset of instructions
   // that have a scheduling class (itinerary class or SchedRW list)
@@ -96,13 +94,13 @@ class SchedMachineModel {
   // be an error. This should only be set during initial bringup,
   // or there will be no way to catch simple errors in the model
   // resulting from changes to the instruction definitions.
-  bit CompleteModel = 1;
+  bit CompleteModel = true;
 
   // Indicates that we should do full overlap checking for multiple InstrRWs
-  // definining the same instructions within the same SchedMachineModel.
+  // defining the same instructions within the same SchedMachineModel.
   // FIXME: Remove when all in tree targets are clean with the full check
   // enabled.
-  bit FullInstRWOverlapCheck = 1;
+  bit FullInstRWOverlapCheck = true;
 
   // A processor may only implement part of published ISA, due to either new ISA
   // extensions, (e.g. Pentium 4 doesn't have AVX) or implementation
@@ -118,12 +116,17 @@ class SchedMachineModel {
   // field.
   list<Predicate> UnsupportedFeatures = [];
 
-  bit NoModel = 0; // Special tag to indicate missing machine model.
+  bit NoModel = false; // Special tag to indicate missing machine model.
+
+  // Tells the MachineScheduler whether or not to track resource usage
+  // using intervals via ResourceSegments (see
+  // llvm/include/llvm/CodeGen/MachineScheduler.h).
+  bit EnableIntervals = false;
 }
 
 def NoSchedModel : SchedMachineModel {
-  let NoModel = 1;
-  let CompleteModel = 0;
+  let NoModel = true;
+  let CompleteModel = false;
 }
 
 // Define a kind of processor resource that may be common across
@@ -144,7 +147,7 @@ class ProcResourceKind;
 // changes this to an in-order issue/dispatch resource. In this case,
 // the scheduler counts down from the cycle that the instruction
 // issues in-order, forcing a stall whenever a subsequent instruction
-// requires the same resource until the number of ResourceCycles
+// requires the same resource until the number of ReleaseAtCycles
 // specified in WriteRes expire. Setting BufferSize=1 changes this to
 // an in-order latency resource. In this case, the scheduler models
 // producer/consumer stalls between instructions that use the
@@ -163,7 +166,7 @@ class ProcResourceKind;
 // differently. Here we refer to stage between decoding into micro-ops
 // and moving them into a reservation station.) Normally NumMicroOps
 // is sufficient to limit dispatch/issue groups. However, some
-// processors can form groups of with only certain combinitions of
+// processors can form groups of with only certain combinations of
 // instruction types. e.g. POWER7.
 //
 // Use BufferSize = 1 for in-order execution units. This is used for
@@ -189,15 +192,10 @@ class ProcResourceUnits<ProcResourceKind kind, int num> {
   SchedMachineModel SchedModel = ?;
 }
 
-// EponymousProcResourceKind helps implement ProcResourceUnits by
-// allowing a ProcResourceUnits definition to reference itself. It
-// should not be referenced anywhere else.
-def EponymousProcResourceKind : ProcResourceKind;
-
 // Subtargets typically define processor resource kind and number of
 // units in one place.
 class ProcResource<int num> : ProcResourceKind,
-  ProcResourceUnits<EponymousProcResourceKind, num>;
+  ProcResourceUnits<!cast<ProcResourceKind>(NAME), num>;
 
 class ProcResGroup<list<ProcResource> resources> : ProcResourceKind {
   list<ProcResource> Resources = resources;
@@ -251,17 +249,28 @@ class WriteSequence<list<SchedWrite> writes, int rep = 1> : SchedWrite {
 // SchedModel ties these resources to a processor.
 class ProcWriteResources<list<ProcResourceKind> resources> {
   list<ProcResourceKind> ProcResources = resources;
-  list<int> ResourceCycles = [];
+  /// Cycle at which the resource will be released by an instruction,
+  /// relatively to the cycle in which the instruction is issued
+  /// (assuming no stalls inbetween).
+  list<int> ReleaseAtCycles = [];
+  /// Cycle at which the resource will be aquired by an instruction,
+  /// relatively to the cycle in which the instruction is issued
+  /// (assuming no stalls inbetween).
+  list<int> AcquireAtCycles = [];
   int Latency = 1;
   int NumMicroOps = 1;
-  bit BeginGroup = 0;
-  bit EndGroup = 0;
+  bit BeginGroup = false;
+  bit EndGroup = false;
   // Allow a processor to mark some scheduling classes as unsupported
   // for stronger verification.
-  bit Unsupported = 0;
+  bit Unsupported = false;
   // Allow a processor to mark some scheduling classes as single-issue.
   // SingleIssue is an alias for Begin/End Group.
-  bit SingleIssue = 0;
+  bit SingleIssue = false;
+  // An instruction is allowed to retire out-of-order if RetireOOO is
+  // true for at least one of its writes. This field is only used by
+  // MCA for in-order subtargets, and is ignored for other targets.
+  bit RetireOOO = false;
   SchedMachineModel SchedModel = ?;
 }
 
@@ -277,12 +286,12 @@ class ProcWriteResources<list<ProcResourceKind> resources> {
 // itinerary classes to the subtarget's SchedWrites.
 //
 // ProcResources indicates the set of resources consumed by the write.
-// Optionally, ResourceCycles indicates the number of cycles the
-// resource is consumed. Each ResourceCycles item is paired with the
-// ProcResource item at the same position in its list. ResourceCycles
+// Optionally, ReleaseAtCycles indicates the number of cycles the
+// resource is consumed. Each ReleaseAtCycles item is paired with the
+// ProcResource item at the same position in its list. ReleaseAtCycles
 // can be `[]`: in that case, all resources are consumed for a single
 // cycle, regardless of latency, which models a fully pipelined processing
-// unit. A value of 0 for ResourceCycles means that the resource must
+// unit. A value of 0 for ReleaseAtCycles means that the resource must
 // be available but is not consumed, which is only relevant for
 // unbuffered resources.
 //
@@ -317,7 +326,7 @@ class ProcReadAdvance<int cycles, list<SchedWrite> writes = []> {
   list<SchedWrite> ValidWrites = writes;
   // Allow a processor to mark some scheduling classes as unsupported
   // for stronger verification.
-  bit Unsupported = 0;
+  bit Unsupported = false;
   SchedMachineModel SchedModel = ?;
 }
 
@@ -390,12 +399,14 @@ def NoSchedPred : MCSchedPredicate<TruePred>;
 class SchedVar<SchedPredicateBase pred, list<SchedReadWrite> selected> {
   SchedPredicateBase Predicate = pred;
   list<SchedReadWrite> Selected = selected;
+  // SchedModel silences warnings but is ignored.
+  SchedMachineModel SchedModel = ?;
 }
 
 // SchedModel silences warnings but is ignored.
 class SchedVariant<list<SchedVar> variants> {
   list<SchedVar> Variants = variants;
-  bit Variadic = 0;
+  bit Variadic = false;
   SchedMachineModel SchedModel = ?;
 }
 
@@ -428,7 +439,7 @@ class InstRW<list<SchedReadWrite> rw, dag instrlist> {
   dag Instrs = instrlist;
   SchedMachineModel SchedModel = ?;
   // Allow a subtarget to mark some instructions as unsupported.
-  bit Unsupported = 0;
+  bit Unsupported = false;
 }
 
 // Map a set of itinerary classes to SchedReadWrite resources. This is
@@ -535,7 +546,7 @@ class SchedAlias<SchedReadWrite match, SchedReadWrite alias> {
 
 class RegisterFile<int numPhysRegs, list<RegisterClass> Classes = [],
                    list<int> Costs = [], list<bit> AllowMoveElim = [],
-                   int MaxMoveElimPerCy = 0, bit AllowZeroMoveElimOnly = 0> {
+                   int MaxMoveElimPerCy = 0, bit AllowZeroMoveElimOnly = false> {
   list<RegisterClass> RegClasses = Classes;
   list<int> RegCosts = Costs;
   list<bit> AllowMoveElimination = AllowMoveElim;

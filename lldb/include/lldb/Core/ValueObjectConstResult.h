@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef liblldb_ValueObjectConstResult_h_
-#define liblldb_ValueObjectConstResult_h_
+#ifndef LLDB_CORE_VALUEOBJECTCONSTRESULT_H
+#define LLDB_CORE_VALUEOBJECTCONSTRESULT_H
 
 #include "lldb/Core/Value.h"
 #include "lldb/Core/ValueObject.h"
@@ -21,15 +21,16 @@
 #include "lldb/lldb-private-enumerations.h"
 #include "lldb/lldb-types.h"
 
-#include <stddef.h>
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
 
 namespace lldb_private {
 class DataExtractor;
 class ExecutionContextScope;
 class Module;
 
-// A frozen ValueObject copied into host memory
+/// A frozen ValueObject copied into host memory.
 class ValueObjectConstResult : public ValueObject {
 public:
   ~ValueObjectConstResult() override;
@@ -62,11 +63,11 @@ public:
   static lldb::ValueObjectSP Create(ExecutionContextScope *exe_scope,
                                     const Status &error);
 
-  uint64_t GetByteSize() override;
+  std::optional<uint64_t> GetByteSize() override;
 
   lldb::ValueType GetValueType() const override;
 
-  size_t CalculateNumChildren(uint32_t max) override;
+  llvm::Expected<uint32_t> CalculateNumChildren(uint32_t max) override;
 
   ConstString GetTypeName() override;
 
@@ -77,9 +78,6 @@ public:
   void SetByteSize(size_t size);
 
   lldb::ValueObjectSP Dereference(Status &error) override;
-
-  ValueObject *CreateChildAtIndex(size_t idx, bool synthetic_array_member,
-                                  int32_t synthetic_index) override;
 
   lldb::ValueObjectSP GetSyntheticChildAtOffset(
       uint32_t offset, const CompilerType &type, bool can_create,
@@ -105,7 +103,7 @@ public:
 
   lldb::LanguageType GetPreferredDisplayLanguage() override;
 
-  lldb::ValueObjectSP Cast(const CompilerType &compiler_type) override;
+  lldb::ValueObjectSP DoCast(const CompilerType &compiler_type) override;
 
 protected:
   bool UpdateValue() override;
@@ -113,7 +111,7 @@ protected:
   CompilerType GetCompilerTypeImpl() override;
 
   ConstString m_type_name;
-  uint64_t m_byte_size;
+  std::optional<uint64_t> m_byte_size;
 
   ValueObjectConstResultImpl m_impl;
 
@@ -121,34 +119,47 @@ private:
   friend class ValueObjectConstResultImpl;
 
   ValueObjectConstResult(ExecutionContextScope *exe_scope,
+                         ValueObjectManager &manager,
                          lldb::ByteOrder byte_order, uint32_t addr_byte_size,
                          lldb::addr_t address);
 
   ValueObjectConstResult(ExecutionContextScope *exe_scope,
-                         const CompilerType &compiler_type,
-                         ConstString name, const DataExtractor &data,
-                         lldb::addr_t address);
+                         ValueObjectManager &manager,
+                         const CompilerType &compiler_type, ConstString name,
+                         const DataExtractor &data, lldb::addr_t address);
 
   ValueObjectConstResult(ExecutionContextScope *exe_scope,
-                         const CompilerType &compiler_type,
-                         ConstString name,
+                         ValueObjectManager &manager,
+                         const CompilerType &compiler_type, ConstString name,
                          const lldb::DataBufferSP &result_data_sp,
                          lldb::ByteOrder byte_order, uint32_t addr_size,
                          lldb::addr_t address);
 
   ValueObjectConstResult(ExecutionContextScope *exe_scope,
-                         const CompilerType &compiler_type,
-                         ConstString name, lldb::addr_t address,
-                         AddressType address_type, uint32_t addr_byte_size);
+                         ValueObjectManager &manager,
+                         const CompilerType &compiler_type, ConstString name,
+                         lldb::addr_t address, AddressType address_type,
+                         uint32_t addr_byte_size);
 
-  ValueObjectConstResult(ExecutionContextScope *exe_scope, const Value &value,
+  ValueObjectConstResult(ExecutionContextScope *exe_scope,
+                         ValueObjectManager &manager, const Value &value,
                          ConstString name, Module *module = nullptr);
 
-  ValueObjectConstResult(ExecutionContextScope *exe_scope, const Status &error);
+  ValueObjectConstResult(ExecutionContextScope *exe_scope,
+                         ValueObjectManager &manager, const Status &error);
 
-  DISALLOW_COPY_AND_ASSIGN(ValueObjectConstResult);
+  ValueObject *CreateChildAtIndex(size_t idx) override {
+    return m_impl.CreateChildAtIndex(idx);
+  }
+  ValueObject *CreateSyntheticArrayMember(size_t idx) override {
+    return m_impl.CreateSyntheticArrayMember(idx);
+  }
+
+  ValueObjectConstResult(const ValueObjectConstResult &) = delete;
+  const ValueObjectConstResult &
+  operator=(const ValueObjectConstResult &) = delete;
 };
 
 } // namespace lldb_private
 
-#endif // liblldb_ValueObjectConstResult_h_
+#endif // LLDB_CORE_VALUEOBJECTCONSTRESULT_H

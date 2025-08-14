@@ -119,40 +119,11 @@ _start:
 # CHECK-NEXT:     ]
 # CHECK-NEXT:     Address: 0x0
 # CHECK-NEXT:     Offset: 0x1AA
-# CHECK-NEXT:     Size: 13
+# CHECK-NEXT:     Size: 11
 # CHECK-NEXT:     Link: 0
 # CHECK-NEXT:     Info: 0
 # CHECK-NEXT:     AddressAlignment: 1
 # CHECK-NEXT:     EntrySize: 0
-# CHECK-NEXT:   }
-# CHECK-NEXT: ]
-# CHECK-NEXT: Symbols [
-# CHECK-NEXT:   Symbol {
-# CHECK-NEXT:     Name:  (0)
-# CHECK-NEXT:     Value: 0x0
-# CHECK-NEXT:     Size: 0
-# CHECK-NEXT:     Binding: Local (0x0)
-# CHECK-NEXT:     Type: None (0x0)
-# CHECK-NEXT:     Other: 0
-# CHECK-NEXT:     Section: Undefined (0x0)
-# CHECK-NEXT:   }
-# CHECK-NEXT:   Symbol {
-# CHECK-NEXT:     Name: $x.0
-# CHECK-NEXT:     Value: 0x210120
-# CHECK-NEXT:     Size: 0
-# CHECK-NEXT:     Binding: Local (0x0)
-# CHECK-NEXT:     Type: None (0x0)
-# CHECK-NEXT:     Other: 0
-# CHECK-NEXT:     Section: .text
-# CHECK-NEXT:   }
-# CHECK-NEXT:   Symbol {
-# CHECK-NEXT:     Name: _start
-# CHECK-NEXT:     Value: [[ENTRY]]
-# CHECK-NEXT:     Size: 0
-# CHECK-NEXT:     Binding: Global (0x1)
-# CHECK-NEXT:     Type: None (0x0)
-# CHECK-NEXT:     Other: 0
-# CHECK-NEXT:     Section: .text
 # CHECK-NEXT:   }
 # CHECK-NEXT: ]
 # CHECK-NEXT: ProgramHeaders [
@@ -205,5 +176,34 @@ _start:
 # CHECK-NEXT:       PF_W
 # CHECK-NEXT:     ]
 # CHECK-NEXT:     Alignment: 0
+# CHECK-NEXT:   }
+# CHECK-NEXT: ]
+# CHECK-NEXT: Symbols [
+# CHECK-NEXT:   Symbol {
+# CHECK-NEXT:     Name:  (0)
+# CHECK-NEXT:     Value: 0x0
+# CHECK-NEXT:     Size: 0
+# CHECK-NEXT:     Binding: Local (0x0)
+# CHECK-NEXT:     Type: None (0x0)
+# CHECK-NEXT:     Other: 0
+# CHECK-NEXT:     Section: Undefined (0x0)
+# CHECK-NEXT:   }
+# CHECK-NEXT:   Symbol {
+# CHECK-NEXT:     Name: $x
+# CHECK-NEXT:     Value: 0x210120
+# CHECK-NEXT:     Size: 0
+# CHECK-NEXT:     Binding: Local (0x0)
+# CHECK-NEXT:     Type: None (0x0)
+# CHECK-NEXT:     Other: 0
+# CHECK-NEXT:     Section: .text
+# CHECK-NEXT:   }
+# CHECK-NEXT:   Symbol {
+# CHECK-NEXT:     Name: _start
+# CHECK-NEXT:     Value: [[ENTRY]]
+# CHECK-NEXT:     Size: 0
+# CHECK-NEXT:     Binding: Global (0x1)
+# CHECK-NEXT:     Type: None (0x0)
+# CHECK-NEXT:     Other: 0
+# CHECK-NEXT:     Section: .text
 # CHECK-NEXT:   }
 # CHECK-NEXT: ]

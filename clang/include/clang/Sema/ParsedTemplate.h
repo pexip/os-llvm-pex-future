@@ -63,8 +63,7 @@ namespace clang {
                            ParsedTemplateTy Template,
                            SourceLocation TemplateLoc)
       : Kind(ParsedTemplateArgument::Template),
-        Arg(Template.getAsOpaquePtr()),
-        SS(SS), Loc(TemplateLoc), EllipsisLoc() { }
+        Arg(Template.getAsOpaquePtr()), SS(SS), Loc(TemplateLoc) {}
 
     /// Determine whether the given template argument is invalid.
     bool isInvalid() const { return Arg == nullptr; }
@@ -160,7 +159,7 @@ namespace clang {
     SourceLocation TemplateNameLoc;
 
     /// FIXME: Temporarily stores the name of a specialization
-    IdentifierInfo *Name;
+    const IdentifierInfo *Name;
 
     /// FIXME: Temporarily stores the overloaded operator kind.
     OverloadedOperatorKind Operator;
@@ -169,7 +168,9 @@ namespace clang {
     /// template-name.
     ParsedTemplateTy Template;
 
-    /// The kind of template that Template refers to.
+    /// The kind of template that Template refers to. If this is
+    /// TNK_Non_template, an error was encountered and diagnosed
+    /// when parsing or looking up the template name.
     TemplateNameKind Kind;
 
     /// The location of the '<' before the template argument
@@ -183,6 +184,10 @@ namespace clang {
     /// NumArgs - The number of template arguments.
     unsigned NumArgs;
 
+    /// Whether an error was encountered in the template arguments.
+    /// If so, NumArgs and the trailing arguments are best-effort.
+    bool ArgsInvalid;
+
     /// Retrieves a pointer to the template arguments
     ParsedTemplateArgument *getTemplateArgs() {
       return getTrailingObjects<ParsedTemplateArgument>();
@@ -192,41 +197,57 @@ namespace clang {
     /// appends it to List.
     static TemplateIdAnnotation *
     Create(SourceLocation TemplateKWLoc, SourceLocation TemplateNameLoc,
-           IdentifierInfo *Name, OverloadedOperatorKind OperatorKind,
+           const IdentifierInfo *Name, OverloadedOperatorKind OperatorKind,
            ParsedTemplateTy OpaqueTemplateName, TemplateNameKind TemplateKind,
            SourceLocation LAngleLoc, SourceLocation RAngleLoc,
-           ArrayRef<ParsedTemplateArgument> TemplateArgs,
+           ArrayRef<ParsedTemplateArgument> TemplateArgs, bool ArgsInvalid,
            SmallVectorImpl<TemplateIdAnnotation *> &CleanupList) {
       TemplateIdAnnotation *TemplateId = new (llvm::safe_malloc(
           totalSizeToAlloc<ParsedTemplateArgument>(TemplateArgs.size())))
           TemplateIdAnnotation(TemplateKWLoc, TemplateNameLoc, Name,
                                OperatorKind, OpaqueTemplateName, TemplateKind,
-                               LAngleLoc, RAngleLoc, TemplateArgs);
+                               LAngleLoc, RAngleLoc, TemplateArgs, ArgsInvalid);
       CleanupList.push_back(TemplateId);
       return TemplateId;
     }
 
     void Destroy() {
-      std::for_each(
-          getTemplateArgs(), getTemplateArgs() + NumArgs,
-          [](ParsedTemplateArgument &A) { A.~ParsedTemplateArgument(); });
+      for (ParsedTemplateArgument &A :
+           llvm::make_range(getTemplateArgs(), getTemplateArgs() + NumArgs))
+        A.~ParsedTemplateArgument();
       this->~TemplateIdAnnotation();
       free(this);
     }
+
+    /// Determine whether this might be a type template.
+    bool mightBeType() const {
+      return Kind == TNK_Non_template ||
+             Kind == TNK_Type_template ||
+             Kind == TNK_Dependent_template_name ||
+             Kind == TNK_Undeclared_template;
+    }
+
+    bool hasInvalidName() const { return Kind == TNK_Non_template; }
+    bool hasInvalidArgs() const { return ArgsInvalid; }
+
+    bool isInvalid() const { return hasInvalidName() || hasInvalidArgs(); }
+
   private:
     TemplateIdAnnotation(const TemplateIdAnnotation &) = delete;
 
     TemplateIdAnnotation(SourceLocation TemplateKWLoc,
-                         SourceLocation TemplateNameLoc, IdentifierInfo *Name,
+                         SourceLocation TemplateNameLoc,
+                         const IdentifierInfo *Name,
                          OverloadedOperatorKind OperatorKind,
                          ParsedTemplateTy OpaqueTemplateName,
                          TemplateNameKind TemplateKind,
                          SourceLocation LAngleLoc, SourceLocation RAngleLoc,
-                         ArrayRef<ParsedTemplateArgument> TemplateArgs) noexcept
+                         ArrayRef<ParsedTemplateArgument> TemplateArgs,
+                         bool ArgsInvalid) noexcept
         : TemplateKWLoc(TemplateKWLoc), TemplateNameLoc(TemplateNameLoc),
           Name(Name), Operator(OperatorKind), Template(OpaqueTemplateName),
           Kind(TemplateKind), LAngleLoc(LAngleLoc), RAngleLoc(RAngleLoc),
-          NumArgs(TemplateArgs.size()) {
+          NumArgs(TemplateArgs.size()), ArgsInvalid(ArgsInvalid) {
 
       std::uninitialized_copy(TemplateArgs.begin(), TemplateArgs.end(),
                               getTemplateArgs());

@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef liblldb_RegularExpression_h_
-#define liblldb_RegularExpression_h_
+#ifndef LLDB_UTILITY_REGULAREXPRESSION_H
+#define LLDB_UTILITY_REGULAREXPRESSION_H
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -31,7 +31,13 @@ public:
   /// \param[in] string
   ///     An llvm::StringRef that represents the regular expression to compile.
   //      String is not referenced anymore after the object is constructed.
-  explicit RegularExpression(llvm::StringRef string);
+  //
+  /// \param[in] flags
+  ///     An llvm::Regex::RegexFlags that modifies the matching behavior. The
+  ///     default is NoFlags.
+  explicit RegularExpression(
+      llvm::StringRef string,
+      llvm::Regex::RegexFlags flags = llvm::Regex::NoFlags);
 
   ~RegularExpression() = default;
 
@@ -91,4 +97,4 @@ private:
 
 } // namespace lldb_private
 
-#endif // liblldb_RegularExpression_h_
+#endif // LLDB_UTILITY_REGULAREXPRESSION_H

@@ -9,6 +9,7 @@
 #include "HexagonInstrInfo.h"
 #include "HexagonRegisterInfo.h"
 #include "HexagonSubtarget.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
@@ -28,12 +29,13 @@
 
 using namespace llvm;
 
-static cl::opt<unsigned> CountThreshold("hexagon-cext-threshold",
-  cl::init(3), cl::Hidden, cl::ZeroOrMore,
-  cl::desc("Minimum number of extenders to trigger replacement"));
+static cl::opt<unsigned> CountThreshold(
+    "hexagon-cext-threshold", cl::init(3), cl::Hidden,
+    cl::desc("Minimum number of extenders to trigger replacement"));
 
-static cl::opt<unsigned> ReplaceLimit("hexagon-cext-limit", cl::init(0),
-  cl::Hidden, cl::ZeroOrMore, cl::desc("Maximum number of replacements"));
+static cl::opt<unsigned>
+    ReplaceLimit("hexagon-cext-limit", cl::init(0), cl::Hidden,
+                 cl::desc("Maximum number of replacements"));
 
 namespace llvm {
   void initializeHexagonConstExtendersPass(PassRegistry&);
@@ -216,8 +218,8 @@ namespace {
     HexagonConstExtenders() : MachineFunctionPass(ID) {}
 
     void getAnalysisUsage(AnalysisUsage &AU) const override {
-      AU.addRequired<MachineDominatorTree>();
-      AU.addPreserved<MachineDominatorTree>();
+      AU.addRequired<MachineDominatorTreeWrapperPass>();
+      AU.addPreserved<MachineDominatorTreeWrapperPass>();
       MachineFunctionPass::getAnalysisUsage(AU);
     }
 
@@ -229,7 +231,7 @@ namespace {
   private:
     struct Register {
       Register() = default;
-      Register(unsigned R, unsigned S) : Reg(R), Sub(S) {}
+      Register(llvm::Register R, unsigned S) : Reg(R), Sub(S) {}
       Register(const MachineOperand &Op)
         : Reg(Op.getReg()), Sub(Op.getSubReg()) {}
       Register &operator=(const MachineOperand &Op) {
@@ -242,18 +244,15 @@ namespace {
         return *this;
       }
       bool isVReg() const {
-        return Reg != 0 && !llvm::Register::isStackSlot(Reg) &&
-               llvm::Register::isVirtualRegister(Reg);
+        return Reg != 0 && !Reg.isStack() && Reg.isVirtual();
       }
-      bool isSlot() const {
-        return Reg != 0 && llvm::Register::isStackSlot(Reg);
-      }
+      bool isSlot() const { return Reg != 0 && Reg.isStack(); }
       operator MachineOperand() const {
         if (isVReg())
           return MachineOperand::CreateReg(Reg, /*Def*/false, /*Imp*/false,
                           /*Kill*/false, /*Dead*/false, /*Undef*/false,
                           /*EarlyClobber*/false, Sub);
-        if (llvm::Register::isStackSlot(Reg)) {
+        if (Reg.isStack()) {
           int FI = llvm::Register::stackSlot2Index(Reg);
           return MachineOperand::CreateFI(FI);
         }
@@ -265,7 +264,8 @@ namespace {
         // For std::map.
         return Reg < R.Reg || (Reg == R.Reg && Sub < R.Sub);
       }
-      unsigned Reg = 0, Sub = 0;
+      llvm::Register Reg;
+      unsigned Sub = 0;
     };
 
     struct ExtExpr {
@@ -379,6 +379,7 @@ namespace {
     using AssignmentMap = std::map<ExtenderInit, IndexList>;
     using LocDefList = std::vector<std::pair<Loc, IndexList>>;
 
+    const HexagonSubtarget *HST = nullptr;
     const HexagonInstrInfo *HII = nullptr;
     const HexagonRegisterInfo *HRI = nullptr;
     MachineDominatorTree *MDT = nullptr;
@@ -568,7 +569,7 @@ namespace {
 
 INITIALIZE_PASS_BEGIN(HexagonConstExtenders, "hexagon-cext-opt",
       "Hexagon constant-extender optimization", false, false)
-INITIALIZE_PASS_DEPENDENCY(MachineDominatorTree)
+INITIALIZE_PASS_DEPENDENCY(MachineDominatorTreeWrapperPass)
 INITIALIZE_PASS_END(HexagonConstExtenders, "hexagon-cext-opt",
       "Hexagon constant-extender optimization", false, false)
 
@@ -1222,6 +1223,10 @@ void HCE::recordExtender(MachineInstr &MI, unsigned OpNum) {
   if (ER.Kind == MachineOperand::MO_GlobalAddress)
     if (ER.V.GV->getName().empty())
       return;
+  // Ignore block address that points to block in another function
+  if (ER.Kind == MachineOperand::MO_BlockAddress)
+    if (ER.V.BA->getFunction() != &(MI.getMF()->getFunction()))
+      return;
   Extenders.push_back(ED);
 }
 
@@ -1255,7 +1260,7 @@ void HCE::collect(MachineFunction &MF) {
 
 void HCE::assignInits(const ExtRoot &ER, unsigned Begin, unsigned End,
       AssignmentMap &IMap) {
-  // Sanity check: make sure that all extenders in the range [Begin..End)
+  // Basic correctness: make sure that all extenders in the range [Begin..End)
   // share the same root ER.
   for (unsigned I = Begin; I != End; ++I)
     assert(ER == ExtRoot(Extenders[I].getOp()));
@@ -1387,11 +1392,10 @@ void HCE::assignInits(const ExtRoot &ER, unsigned Begin, unsigned End,
       break;
 
     // Find the best candidate with respect to the number of extenders covered.
-    auto BestIt = std::max_element(Counts.begin(), Counts.end(),
-                    [](const CMap::value_type &A, const CMap::value_type &B) {
-                      return A.second < B.second ||
-                             (A.second == B.second && A < B);
-                    });
+    auto BestIt = llvm::max_element(
+        Counts, [](const CMap::value_type &A, const CMap::value_type &B) {
+          return A.second < B.second || (A.second == B.second && A < B);
+        });
     int32_t Best = BestIt->first;
     ExtValue BestV(ER, Best);
     for (RangeTree::Node *N : Tree.nodesWith(Best)) {
@@ -1562,13 +1566,31 @@ HCE::Register HCE::insertInitializer(Loc DefL, const ExtenderInit &ExtI) {
                   .add(ExtOp);
       }
     } else {
-      unsigned NewOpc = Ex.Neg ? Hexagon::S4_subi_asl_ri
-                               : Hexagon::S4_addi_asl_ri;
-      // DefR = add(##EV,asl(Rb,S))
-      InitI = BuildMI(MBB, At, dl, HII->get(NewOpc), DefR)
-                .add(ExtOp)
-                .add(MachineOperand(Ex.Rs))
-                .addImm(Ex.S);
+      if (HST->useCompound()) {
+        unsigned NewOpc = Ex.Neg ? Hexagon::S4_subi_asl_ri
+                                 : Hexagon::S4_addi_asl_ri;
+        // DefR = add(##EV,asl(Rb,S))
+        InitI = BuildMI(MBB, At, dl, HII->get(NewOpc), DefR)
+                  .add(ExtOp)
+                  .add(MachineOperand(Ex.Rs))
+                  .addImm(Ex.S);
+      } else {
+        // No compounds are available. It is not clear whether we should
+        // even process such extenders where the initializer cannot be
+        // a single instruction, but do it for now.
+        llvm::Register TmpR = MRI->createVirtualRegister(&Hexagon::IntRegsRegClass);
+        BuildMI(MBB, At, dl, HII->get(Hexagon::S2_asl_i_r), TmpR)
+          .add(MachineOperand(Ex.Rs))
+          .addImm(Ex.S);
+        if (Ex.Neg)
+          InitI = BuildMI(MBB, At, dl, HII->get(Hexagon::A2_subri), DefR)
+                    .add(ExtOp)
+                    .add(MachineOperand(Register(TmpR, 0)));
+        else
+          InitI = BuildMI(MBB, At, dl, HII->get(Hexagon::A2_addi), DefR)
+                    .add(MachineOperand(Register(TmpR, 0)))
+                    .add(ExtOp);
+      }
     }
   }
 
@@ -1726,7 +1748,7 @@ bool HCE::replaceInstrExpr(const ExtDesc &ED, const ExtenderInit &ExtI,
       // "alignment" as Diff.
       uint32_t UD = Diff;
       OffsetRange R = getOffsetRange(MI.getOperand(0));
-      uint32_t A = std::min<uint32_t>(R.Align, 1u << countTrailingZeros(UD));
+      uint32_t A = std::min<uint32_t>(R.Align, 1u << llvm::countr_zero(UD));
       D &= ~(A-1);
     }
     BuildMI(MBB, At, dl, HII->get(IdxOpc))
@@ -1952,9 +1974,10 @@ bool HCE::runOnMachineFunction(MachineFunction &MF) {
   }
   LLVM_DEBUG(MF.print(dbgs() << "Before " << getPassName() << '\n', nullptr));
 
-  HII = MF.getSubtarget<HexagonSubtarget>().getInstrInfo();
-  HRI = MF.getSubtarget<HexagonSubtarget>().getRegisterInfo();
-  MDT = &getAnalysis<MachineDominatorTree>();
+  HST = &MF.getSubtarget<HexagonSubtarget>();
+  HII = HST->getInstrInfo();
+  HRI = HST->getRegisterInfo();
+  MDT = &getAnalysis<MachineDominatorTreeWrapperPass>().getDomTree();
   MRI = &MF.getRegInfo();
   AssignmentMap IMap;
 

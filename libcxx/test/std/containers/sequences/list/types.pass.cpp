@@ -35,10 +35,12 @@ int main(int, char**)
     typedef std::list<int> C;
     static_assert((std::is_same<C::value_type, int>::value), "");
     static_assert((std::is_same<C::allocator_type, std::allocator<int> >::value), "");
-    static_assert((std::is_same<C::reference, std::allocator<int>::reference>::value), "");
-    static_assert((std::is_same<C::const_reference, std::allocator<int>::const_reference>::value), "");
-    static_assert((std::is_same<C::pointer, std::allocator<int>::pointer>::value), "");
-    static_assert((std::is_same<C::const_pointer, std::allocator<int>::const_pointer>::value), "");
+    static_assert((std::is_same<C::reference, std::allocator_traits<std::allocator<int> >::value_type&>::value), "");
+    static_assert(
+        (std::is_same<C::const_reference, const std::allocator_traits<std::allocator<int> >::value_type&>::value), "");
+    static_assert((std::is_same<C::pointer, std::allocator_traits<std::allocator<int> >::pointer>::value), "");
+    static_assert(
+        (std::is_same<C::const_pointer, std::allocator_traits<std::allocator<int> >::const_pointer>::value), "");
 
     static_assert((std::is_signed<typename C::difference_type>::value), "");
     static_assert((std::is_unsigned<typename C::size_type>::value), "");

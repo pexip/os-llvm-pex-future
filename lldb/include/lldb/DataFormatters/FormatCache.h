@@ -7,8 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef lldb_FormatCache_h_
-#define lldb_FormatCache_h_
+#ifndef LLDB_DATAFORMATTERS_FORMATCACHE_H
+#define LLDB_DATAFORMATTERS_FORMATCACHE_H
 
 #include <map>
 #include <mutex>
@@ -45,17 +45,14 @@ private:
     void Set(lldb::TypeSummaryImplSP);
     void Set(lldb::SyntheticChildrenSP);
   };
-  typedef std::map<ConstString, Entry> CacheMap;
-  CacheMap m_map;
+  std::map<ConstString, Entry> m_entries;
   std::recursive_mutex m_mutex;
 
-  uint64_t m_cache_hits;
-  uint64_t m_cache_misses;
-
-  Entry &GetEntry(ConstString type);
+  uint64_t m_cache_hits = 0;
+  uint64_t m_cache_misses = 0;
 
 public:
-  FormatCache();
+  FormatCache() = default;
 
   template <typename ImplSP> bool Get(ConstString type, ImplSP &format_impl_sp);
   void Set(ConstString type, lldb::TypeFormatImplSP &format_sp);
@@ -71,4 +68,4 @@ public:
 
 } // namespace lldb_private
 
-#endif // lldb_FormatCache_h_
+#endif // LLDB_DATAFORMATTERS_FORMATCACHE_H

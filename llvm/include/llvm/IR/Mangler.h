@@ -14,11 +14,12 @@
 #define LLVM_IR_MANGLER_H
 
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/IR/GlobalValue.h"
+#include "llvm/ADT/StringRef.h"
 
 namespace llvm {
 
 class DataLayout;
+class GlobalValue;
 template <typename T> class SmallVectorImpl;
 class Triple;
 class Twine;
@@ -51,6 +52,9 @@ void emitLinkerFlagsForGlobalCOFF(raw_ostream &OS, const GlobalValue *GV,
 
 void emitLinkerFlagsForUsedCOFF(raw_ostream &OS, const GlobalValue *GV,
                                 const Triple &T, Mangler &M);
+
+std::optional<std::string> getArm64ECMangledFunctionName(StringRef Name);
+std::optional<std::string> getArm64ECDemangledFunctionName(StringRef Name);
 
 } // End llvm namespace
 

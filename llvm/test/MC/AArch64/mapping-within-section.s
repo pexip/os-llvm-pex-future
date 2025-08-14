@@ -1,4 +1,4 @@
-// RUN: llvm-mc -triple=aarch64-none-linux-gnu -filetype=obj < %s | llvm-objdump -t - | FileCheck %s
+// RUN: llvm-mc -triple=aarch64-none-linux-gnu -filetype=obj %s | llvm-nm --no-sort --special-syms - | FileCheck %s --match-full-lines
 
     .text
 // $x at 0x0000
@@ -18,6 +18,13 @@
 // $x at 0x0018
     add x0, x0, x0
 
-// CHECK: 00000004         .text  00000000 $d
-// CHECK-NEXT: 00000000         .text  00000000 $x
-// CHECK-NEXT: 00000064         .text  00000000 $x
+.globl $d
+$d:
+$x:
+
+// CHECK:      0000000000000000 t $x
+// CHECK-NEXT: 0000000000000004 t $d
+// CHECK-NEXT: 0000000000000064 t $x
+// CHECK-NEXT: 0000000000000068 t $x
+// CHECK-NEXT: 0000000000000068 T $d
+// CHECK-NOT:  {{.}}

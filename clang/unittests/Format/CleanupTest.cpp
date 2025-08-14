@@ -9,7 +9,6 @@
 #include "clang/Format/Format.h"
 
 #include "../Tooling/ReplacementTest.h"
-#include "../Tooling/RewriterTestContext.h"
 #include "clang/Tooling/Core/Replacement.h"
 
 #include "gtest/gtest.h"
@@ -21,10 +20,9 @@ namespace clang {
 namespace format {
 namespace {
 
-class CleanupTest : public ::testing::Test {
+class CleanupTest : public testing::Test {
 protected:
-  std::string cleanup(llvm::StringRef Code,
-                      const std::vector<tooling::Range> &Ranges,
+  std::string cleanup(StringRef Code, const std::vector<tooling::Range> &Ranges,
                       const FormatStyle &Style = getLLVMStyle()) {
     tooling::Replacements Replaces = format::cleanup(Style, Code, Ranges);
 
@@ -34,8 +32,7 @@ protected:
   }
 
   // Returns code after cleanup around \p Offsets.
-  std::string cleanupAroundOffsets(llvm::ArrayRef<unsigned> Offsets,
-                                   llvm::StringRef Code,
+  std::string cleanupAroundOffsets(ArrayRef<unsigned> Offsets, StringRef Code,
                                    const FormatStyle &Style = getLLVMStyle()) {
     std::vector<tooling::Range> Ranges;
     for (auto Offset : Offsets)
@@ -149,6 +146,31 @@ TEST_F(CleanupTest, CtorInitializationSimpleRedundantComma) {
   Code = "class A {\nA() :,,,,{} };";
   Expected = "class A {\nA() {} };";
   EXPECT_EQ(Expected, cleanupAroundOffsets({15}, Code));
+}
+
+// regression test for bug 39310
+TEST_F(CleanupTest, CtorInitializationSimpleRedundantCommaInFunctionTryBlock) {
+  std::string Code = "class A {\nA() try : , {} };";
+  std::string Expected = "class A {\nA() try  {} };";
+  EXPECT_EQ(Expected, cleanupAroundOffsets({21, 23}, Code));
+
+  Code = "class A {\nA() try : x(1), {} };";
+  Expected = "class A {\nA() try : x(1) {} };";
+  EXPECT_EQ(Expected, cleanupAroundOffsets({27}, Code));
+
+  Code = "class A {\nA() try :,,,,{} };";
+  Expected = "class A {\nA() try {} };";
+  EXPECT_EQ(Expected, cleanupAroundOffsets({19}, Code));
+
+  Code = "class A {\nA() try : x(1),,, {} };";
+  Expected = "class A {\nA() try : x(1) {} };";
+  EXPECT_EQ(Expected, cleanupAroundOffsets({27}, Code));
+
+  // Do not remove every comma following a colon as it simply doesn't make
+  // sense in some situations.
+  Code = "try : , {}";
+  Expected = "try : , {}";
+  EXPECT_EQ(Expected, cleanupAroundOffsets({8}, Code));
 }
 
 TEST_F(CleanupTest, CtorInitializationSimpleRedundantColon) {
@@ -308,7 +330,7 @@ protected:
                            const tooling::Replacements &Replaces) {
     auto CleanReplaces = cleanupAroundReplacements(Code, Replaces, Style);
     EXPECT_TRUE(static_cast<bool>(CleanReplaces))
-        << llvm::toString(CleanReplaces.takeError()) << "\n";
+        << toString(CleanReplaces.takeError()) << "\n";
     auto Result = applyAllReplacements(Code, *CleanReplaces);
     EXPECT_TRUE(static_cast<bool>(Result));
     return *Result;
@@ -318,10 +340,10 @@ protected:
                                     const tooling::Replacements &Replaces) {
     auto CleanReplaces = cleanupAroundReplacements(Code, Replaces, Style);
     EXPECT_TRUE(static_cast<bool>(CleanReplaces))
-        << llvm::toString(CleanReplaces.takeError()) << "\n";
+        << toString(CleanReplaces.takeError()) << "\n";
     auto FormattedReplaces = formatReplacements(Code, *CleanReplaces, Style);
     EXPECT_TRUE(static_cast<bool>(FormattedReplaces))
-        << llvm::toString(FormattedReplaces.takeError()) << "\n";
+        << toString(FormattedReplaces.takeError()) << "\n";
     auto Result = applyAllReplacements(Code, *FormattedReplaces);
     EXPECT_TRUE(static_cast<bool>(Result));
     return *Result;
@@ -453,7 +475,6 @@ TEST_F(CleanUpReplacementsTest, NoNewLineAtTheEndOfCodeMultipleInsertions) {
                       createInsertion("#include <vector>")});
   EXPECT_EQ(Expected, apply(Code, Replaces));
 }
-
 
 TEST_F(CleanUpReplacementsTest, FormatCorrectLineWhenHeadersAreInserted) {
   std::string Code = "\n"

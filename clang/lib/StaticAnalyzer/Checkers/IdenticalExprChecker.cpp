@@ -350,7 +350,9 @@ static bool isIdenticalStmt(const ASTContext &Ctx, const Stmt *Stmt1,
     return false;
   case Stmt::CallExprClass:
   case Stmt::ArraySubscriptExprClass:
-  case Stmt::OMPArraySectionExprClass:
+  case Stmt::ArraySectionExprClass:
+  case Stmt::OMPArrayShapingExprClass:
+  case Stmt::OMPIteratorExprClass:
   case Stmt::ImplicitCastExprClass:
   case Stmt::ParenExprClass:
   case Stmt::BreakStmtClass:
@@ -513,6 +515,6 @@ void ento::registerIdenticalExprChecker(CheckerManager &Mgr) {
   Mgr.registerChecker<FindIdenticalExprChecker>();
 }
 
-bool ento::shouldRegisterIdenticalExprChecker(const LangOptions &LO) {
+bool ento::shouldRegisterIdenticalExprChecker(const CheckerManager &mgr) {
   return true;
 }

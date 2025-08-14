@@ -1,6 +1,6 @@
-; RUN: llc -mtriple=i386 %s -o - | FileCheck --check-prefixes=CHECK,NOFSECT,32 %s
-; RUN: llc -mtriple=x86_64 %s -o - | FileCheck --check-prefixes=CHECK,NOFSECT,64 %s
-; RUN: llc -mtriple=x86_64 -function-sections %s -o - | FileCheck --check-prefixes=CHECK,FSECT,64 %s
+; RUN: llc -mtriple=i386 %s -o - | FileCheck --check-prefixes=CHECK,X86 %s
+; RUN: llc -mtriple=x86_64 %s -o - | FileCheck --check-prefixes=CHECK,X64 %s
+; RUN: llc -mtriple=x86_64 -function-sections %s -o - | FileCheck --check-prefixes=CHECK,X64 %s
 
 define void @f0() "patchable-function-entry"="0" {
 ; CHECK-LABEL: f0:
@@ -16,11 +16,11 @@ define void @f1() "patchable-function-entry"="1" {
 ; CHECK-NEXT: .Lfunc_begin1:
 ; CHECK:       nop
 ; CHECK-NEXT:  ret
-; CHECK:       .section __patchable_function_entries,"awo",@progbits,f1,unique,0
-; 32:          .p2align 2
-; 32-NEXT:     .long .Lfunc_begin1
-; 64:          .p2align 3
-; 64-NEXT:     .quad .Lfunc_begin1
+; CHECK:       .section __patchable_function_entries,"awo",@progbits,f1{{$}}
+; X86:          .p2align 2
+; X86-NEXT:     .long .Lfunc_begin1
+; X64:          .p2align 3
+; X64-NEXT:     .quad .Lfunc_begin1
   ret void
 }
 
@@ -31,15 +31,14 @@ define void @f1() "patchable-function-entry"="1" {
 define void @f2() "patchable-function-entry"="2" {
 ; CHECK-LABEL: f2:
 ; CHECK-NEXT: .Lfunc_begin2:
-; 32-COUNT-2:  nop
-; 64:          xchgw %ax, %ax
+; X86:          xchgw %ax, %ax
+; X64:          xchgw %ax, %ax
 ; CHECK-NEXT:  ret
-; NOFSECT:     .section __patchable_function_entries,"awo",@progbits,f1,unique,0
-; FSECT:       .section __patchable_function_entries,"awo",@progbits,f2,unique,1
-; 32:          .p2align 2
-; 32-NEXT:     .long .Lfunc_begin2
-; 64:          .p2align 3
-; 64-NEXT:     .quad .Lfunc_begin2
+; CHECK:       .section __patchable_function_entries,"awo",@progbits,f2{{$}}
+; X86:          .p2align 2
+; X86-NEXT:     .long .Lfunc_begin2
+; X64:          .p2align 3
+; X64-NEXT:     .quad .Lfunc_begin2
   ret void
 }
 
@@ -47,15 +46,15 @@ $f3 = comdat any
 define void @f3() "patchable-function-entry"="3" comdat {
 ; CHECK-LABEL: f3:
 ; CHECK-NEXT: .Lfunc_begin3:
-; 32-COUNT-3:  nop
-; 64:          nopl (%rax)
+; X86:          xchgw %ax, %ax
+; X86-NEXT:     nop
+; X64:          nopl (%rax)
 ; CHECK:       ret
-; NOFSECT:     .section __patchable_function_entries,"aGwo",@progbits,f3,comdat,f3,unique,1
-; FSECT:       .section __patchable_function_entries,"aGwo",@progbits,f3,comdat,f3,unique,2
-; 32:          .p2align 2
-; 32-NEXT:     .long .Lfunc_begin3
-; 64:          .p2align 3
-; 64-NEXT:     .quad .Lfunc_begin3
+; CHECK:       .section __patchable_function_entries,"awoG",@progbits,f3,f3,comdat{{$}}
+; X86:          .p2align 2
+; X86-NEXT:     .long .Lfunc_begin3
+; X64:          .p2align 3
+; X64-NEXT:     .quad .Lfunc_begin3
   ret void
 }
 
@@ -63,15 +62,15 @@ $f5 = comdat any
 define void @f5() "patchable-function-entry"="5" comdat {
 ; CHECK-LABEL: f5:
 ; CHECK-NEXT: .Lfunc_begin4:
-; 32-COUNT-5:  nop
-; 64:          nopl 8(%rax,%rax)
+; X86-COUNT-2:  xchgw %ax, %ax
+; X86-NEXT:     nop
+; X64:          nopl 8(%rax,%rax)
 ; CHECK-NEXT:  ret
-; NOFSECT      .section __patchable_function_entries,"aGwo",@progbits,f5,comdat,f5,unique,2
-; FSECT:       .section __patchable_function_entries,"aGwo",@progbits,f5,comdat,f5,unique,3
-; 32:          .p2align 2
-; 32-NEXT:     .long .Lfunc_begin4
-; 64:          .p2align 3
-; 64-NEXT:     .quad .Lfunc_begin4
+; CHECK:       .section __patchable_function_entries,"awoG",@progbits,f5,f5,comdat{{$}}
+; X86:          .p2align 2
+; X86-NEXT:     .long .Lfunc_begin4
+; X64:          .p2align 3
+; X64-NEXT:     .quad .Lfunc_begin4
   ret void
 }
 
@@ -81,22 +80,21 @@ define void @f5() "patchable-function-entry"="5" comdat {
 ;; the remaining instructions do not need to be modified.
 define void @f3_2() "patchable-function-entry"="1" "patchable-function-prefix"="2" {
 ; CHECK-LABEL: .type f3_2,@function
-; CHECK-NEXT: .Ltmp0: # @f3_2
+; CHECK-NEXT: .Ltmp0:
 ; CHECK-NEXT:  nop
 ; CHECK-NEXT:  nop
-; CHECK-NEXT: f3_2:
+; CHECK-NEXT: f3_2: # @f3_2
 ; CHECK:      # %bb.0:
 ; CHECK-NEXT:  nop
 ; CHECK-NEXT:  ret
 ;; .size does not include the prefix.
 ; CHECK:      .Lfunc_end5:
 ; CHECK-NEXT: .size f3_2, .Lfunc_end5-f3_2
-; NOFSECT     .section __patchable_function_entries,"awo",@progbits,f0,unique,0
-; FSECT:      .section __patchable_function_entries,"awo",@progbits,f3_2,unique,4
-; 32:         .p2align 2
-; 32-NEXT:    .long .Ltmp0
-; 64:         .p2align 3
-; 64-NEXT:    .quad .Ltmp0
+; CHECK:      .section __patchable_function_entries,"awo",@progbits,f3_2{{$}}
+; X86:         .p2align 2
+; X86-NEXT:    .long .Ltmp0
+; X64:         .p2align 3
+; X64-NEXT:    .quad .Ltmp0
   %frame = alloca i8, i32 16
   ret void
 }

@@ -9,7 +9,6 @@
 #ifndef LLVM_LIB_TARGET_POWERPC_MCTARGETDESC_PPCMCEXPR_H
 #define LLVM_LIB_TARGET_POWERPC_MCTARGETDESC_PPCMCEXPR_H
 
-#include "llvm/MC/MCAsmLayout.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCValue.h"
 
@@ -33,33 +32,29 @@ public:
 private:
   const VariantKind Kind;
   const MCExpr *Expr;
-  bool IsDarwin;
 
   int64_t evaluateAsInt64(int64_t Value) const;
 
-  explicit PPCMCExpr(VariantKind Kind, const MCExpr *Expr, bool IsDarwin)
-      : Kind(Kind), Expr(Expr), IsDarwin(IsDarwin) {}
+  explicit PPCMCExpr(VariantKind Kind, const MCExpr *Expr)
+      : Kind(Kind), Expr(Expr) {}
 
 public:
   /// @name Construction
   /// @{
 
   static const PPCMCExpr *create(VariantKind Kind, const MCExpr *Expr,
-                                 bool IsDarwin, MCContext &Ctx);
+                                 MCContext &Ctx);
 
-  static const PPCMCExpr *createLo(const MCExpr *Expr,
-                                   bool IsDarwin, MCContext &Ctx) {
-    return create(VK_PPC_LO, Expr, IsDarwin, Ctx);
+  static const PPCMCExpr *createLo(const MCExpr *Expr, MCContext &Ctx) {
+    return create(VK_PPC_LO, Expr, Ctx);
   }
 
-  static const PPCMCExpr *createHi(const MCExpr *Expr,
-                                   bool IsDarwin, MCContext &Ctx) {
-    return create(VK_PPC_HI, Expr, IsDarwin, Ctx);
+  static const PPCMCExpr *createHi(const MCExpr *Expr, MCContext &Ctx) {
+    return create(VK_PPC_HI, Expr, Ctx);
   }
 
-  static const PPCMCExpr *createHa(const MCExpr *Expr,
-                                   bool IsDarwin, MCContext &Ctx) {
-    return create(VK_PPC_HA, Expr, IsDarwin, Ctx);
+  static const PPCMCExpr *createHa(const MCExpr *Expr, MCContext &Ctx) {
+    return create(VK_PPC_HA, Expr, Ctx);
   }
 
   /// @}
@@ -72,15 +67,10 @@ public:
   /// getSubExpr - Get the child of this expression.
   const MCExpr *getSubExpr() const { return Expr; }
 
-  /// isDarwinSyntax - True if expression is to be printed using Darwin syntax.
-  bool isDarwinSyntax() const { return IsDarwin; }
-
-
   /// @}
 
   void printImpl(raw_ostream &OS, const MCAsmInfo *MAI) const override;
-  bool evaluateAsRelocatableImpl(MCValue &Res,
-                                 const MCAsmLayout *Layout,
+  bool evaluateAsRelocatableImpl(MCValue &Res, const MCAssembler *Asm,
                                  const MCFixup *Fixup) const override;
   void visitUsedExpr(MCStreamer &Streamer) const override;
   MCFragment *findAssociatedFragment() const override {
