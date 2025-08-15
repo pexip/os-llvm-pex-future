@@ -1,3 +1,9 @@
+llvm-pex-future (19.1.0-0+pexip24u2) pexip; urgency=medium
+
+  * Remove build-dep on python2.7, no longer needed
+
+ -- Steve McIntyre <steve.mcintyre@pexip.com>  Fri, 15 Aug 2025 16:09:11 +0100
+
 llvm-pex-future (19.1.0-0+pexip24u1) pexip; urgency=medium
 
   * Update to 19.1 to match what's in Trixie
