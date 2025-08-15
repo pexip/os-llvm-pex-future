@@ -1,3 +1,9 @@
+llvm-pex-future (19.1.0-0+pexip24u3) pexip; urgency=medium
+
+  * But we do need python3.
+
+ -- Steve McIntyre <steve.mcintyre@pexip.com>  Fri, 15 Aug 2025 16:49:11 +0100
+
 llvm-pex-future (19.1.0-0+pexip24u2) pexip; urgency=medium
 
   * Remove build-dep on python2.7, no longer needed
